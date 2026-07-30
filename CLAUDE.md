@@ -8,9 +8,9 @@ to do, the rule wins.
 
 **Never run git commands unless the user explicitly asks, or to own an open
 pull request.** Once a pull request exists, its author is responsible for it:
-check CI and review activity at least every 30 minutes, address actionable
-feedback and failures, and continue until it is merged or closed. Git is
-otherwise off-limits by default.
+make one CI-and-review check five minutes after opening it or pushing an update,
+then make one check every 30 minutes until it is merged or closed. Address
+actionable feedback and failures. Git is otherwise off-limits by default.
 
 ## Standard Operating Procedures — read these
 

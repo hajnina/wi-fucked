@@ -78,10 +78,11 @@ chore: wip                         ← not a change anyone can review
 
 ### Ownership and follow-through
 
-Opening a PR creates an ownership obligation. Its author checks CI and review
-activity at least every 30 minutes, responds to actionable feedback, fixes
-failures, and follows the PR through until it is merged or closed. Do not leave
-a PR for someone else to discover after its checks fail or a reviewer comments.
+Opening a PR creates an ownership obligation. Its author makes one CI-and-review
+check five minutes after opening the PR or pushing an update, then makes one
+check every 30 minutes. They respond to actionable feedback, fix failures, and
+follow the PR through until it is merged or closed. Do not leave a PR for someone
+else to discover after its checks fail or a reviewer comments.
 
 ### Before opening
 
