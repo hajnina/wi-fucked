@@ -52,8 +52,8 @@ MOCK_HW=1 PYTHONPATH=appliance/src python3 -m dirty
 ## 5. Branch
 
 ```bash
-git checkout master
-git pull origin master
+git checkout main
+git pull origin main
 git checkout -b <type>/<short-description>
 ```
 

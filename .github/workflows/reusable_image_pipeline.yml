@@ -1,0 +1,339 @@
+# Bakes the SD-card image.
+#
+# Technique: a privileged container holding a pre-decompressed Raspberry Pi OS
+# image, loop-mounted and chrooted via qemu-aarch64-static, provisioned in
+# cached stages.
+#
+# Read docs/sop/SOP-008 before changing anything here. In particular:
+#   - never add continue-on-error to a publish step (a green run with no assets
+#     is the worst possible outcome — it looks like success);
+#   - never disable the capability gate to get a build through;
+#   - never cache the inject stage (the version is baked in there).
+
+name: Reusable Image Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+        description: "Full version string, e.g. 1.4.0 or 1.4.0-pr42.abc1234"
+      publish:
+        required: false
+        type: boolean
+        default: false
+        description: "Publish an immutable release. False uploads an artifact only."
+      run_tests:
+        required: false
+        type: boolean
+        default: true
+      runner_labels:
+        required: false
+        type: string
+        default: '["self-hosted", "Linux", "ARM64"]'
+        description: "JSON array of runner labels. Fall back to ubuntu-24.04-arm."
+      compression_level:
+        required: false
+        type: number
+        default: 3
+        description: "zstd level. 3 for PR builds, 19 for releases."
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  bake:
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 120
+    outputs:
+      image: ${{ steps.names.outputs.image }}
+      package: ${{ steps.names.outputs.package }}
+    steps:
+      - name: Install base dependencies
+        run: sudo apt-get update && sudo apt-get install -y git python3 zstd qemu-user-static jq
+
+      # head.sha, not head.ref: a branch name is racy and resolves wrong for
+      # forks. Gutiva's oracle pipeline already does this; its firmware pipeline
+      # does not, and that is a bug we are not inheriting.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Compute asset names
+        id: names
+        run: |
+          echo "image=dirty-${{ inputs.version }}-arm64.img" >> "$GITHUB_OUTPUT"
+          echo "package=dirty-${{ inputs.version }}.wtf" >> "$GITHUB_OUTPUT"
+
+      # The dashboard must work with no Internet. Fail before spending an hour
+      # baking an image whose UI needs a CDN.
+      - name: Airgap gate
+        run: python3 appliance/tests/verify_no_external_assets.py appliance
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+
+      - name: Cache builder image
+        id: builder-cache
+        uses: actions/cache@v4
+        with:
+          path: builder.tar.zst
+          key: builder-${{ runner.os }}-${{ hashFiles('.github/builder.Dockerfile') }}
+
+      - name: Load cached builder
+        if: steps.builder-cache.outputs.cache-hit == 'true'
+        run: |
+          zstd -d -T0 builder.tar.zst -o builder.tar
+          docker load -i builder.tar
+          rm builder.tar
+
+      - name: Build builder
+        if: steps.builder-cache.outputs.cache-hit != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .github
+          file: .github/builder.Dockerfile
+          load: true
+          tags: dirty-builder:latest
+
+      - name: Save builder
+        if: steps.builder-cache.outputs.cache-hit != 'true'
+        run: |
+          docker save dirty-builder:latest -o builder.tar
+          zstd -T0 -3 builder.tar -o builder.tar.zst
+          rm builder.tar
+
+      # Stage A is the slow one — all the apt work happens here — and the only
+      # one worth caching. Keyed on what actually changes it.
+      - name: Cache base image
+        id: base-cache
+        uses: actions/cache@v4
+        with:
+          path: raspios-base.img.zst
+          key: base-${{ runner.os }}-${{ hashFiles('.github/builder.Dockerfile', 'appliance/setup_rpi.sh', 'appliance/apt_deps.txt') }}
+
+      - name: Stage A — provision base image
+        if: steps.base-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          CID=$(docker run -d --privileged -v /dev:/dev dirty-builder:latest sleep infinity)
+          docker cp appliance "${CID}:/workspace-appliance"
+          docker exec -i "${CID}" bash <<'INNER'
+          set -euo pipefail
+
+          # Containerised runners have no udev, so loop and partition nodes must
+          # be created by hand.
+          for i in $(seq 0 63); do
+            [ -b /dev/loop$i ] || mknod /dev/loop$i b 7 $i
+          done
+
+          mkdir -p /build
+          cp /raspios.img /build/base.img
+          # 6G leaves room for two version slots plus telemetry.
+          qemu-img resize -f raw /build/base.img 6G
+          parted -s /build/base.img resizepart 2 100%
+
+          LOOP=$(losetup --find --show -P /build/base.img)
+          udevadm settle || true
+          NAME=$(basename "${LOOP}")
+          for i in $(seq 1 8); do
+            if [ -f /sys/class/block/${NAME}p${i}/dev ]; then
+              IFS=: read -r major minor < /sys/class/block/${NAME}p${i}/dev
+              [ -b /dev/${NAME}p${i} ] || mknod /dev/${NAME}p${i} b "${major}" "${minor}"
+            fi
+          done
+
+          e2fsck -f -y "${LOOP}p2" || true
+          resize2fs "${LOOP}p2"
+
+          mkdir -p /mnt/rpi
+          mount "${LOOP}p2" /mnt/rpi
+          mount "${LOOP}p1" /mnt/rpi/boot
+          for d in dev sys proc dev/pts; do mount --bind /$d /mnt/rpi/$d; done
+          echo "nameserver 1.1.1.1" > /mnt/rpi/etc/resolv.conf
+
+          cp /usr/bin/qemu-aarch64-static /mnt/rpi/usr/bin/
+          chmod +x /mnt/rpi/usr/bin/qemu-aarch64-static
+
+          mkdir -p /mnt/rpi/tmp/repo
+          cp -r /workspace-appliance/. /mnt/rpi/tmp/repo/
+          echo "force-unsafe-io" > /mnt/rpi/etc/dpkg/dpkg.cfg.d/force-unsafe-io
+
+          chroot /mnt/rpi /usr/bin/qemu-aarch64-static /bin/bash -c \
+            'REPO=/tmp/repo /tmp/repo/setup_rpi.sh'
+
+          rm -f /mnt/rpi/etc/dpkg/dpkg.cfg.d/force-unsafe-io
+          for d in dev/pts dev sys proc boot ''; do umount -l /mnt/rpi/$d || true; done
+          losetup -d "${LOOP}"
+
+          zstd -T0 -3 /build/base.img -o /raspios-base.img.zst
+          rm -rf /build
+          INNER
+          docker cp "${CID}:/raspios-base.img.zst" .
+          docker rm -f "${CID}"
+
+      - name: Stage B — build update package
+        run: ./scripts/build_package.sh "${{ inputs.version }}" "${{ steps.names.outputs.package }}"
+
+      # Stage C is deliberately NOT cached. The version is injected here, so a
+      # tree-hash cache would let a PR build (X.Y.Z-pr42) and a main build
+      # (X.Y.Z) of an identical tree share an entry — and ship a release whose
+      # baked-in version reads -pr42. Gutiva has exactly this bug.
+      - name: Stage C — inject application and verify capability
+        run: |
+          set -euo pipefail
+          CID=$(docker run -d --privileged -v /dev:/dev dirty-builder:latest sleep infinity)
+          docker cp raspios-base.img.zst "${CID}:/raspios-base.img.zst"
+          docker cp "${{ steps.names.outputs.package }}" "${CID}:/update.wtf"
+          docker exec -i -e VERSION="${{ inputs.version }}" \
+                          -e COMMIT="${{ github.sha }}" \
+                          -e BUILD="${{ github.run_number }}" "${CID}" bash <<'INNER'
+          set -euo pipefail
+          for i in $(seq 0 63); do [ -b /dev/loop$i ] || mknod /dev/loop$i b 7 $i; done
+
+          mkdir -p /build
+          zstd -d -T0 /raspios-base.img.zst -o /build/final.img
+          LOOP=$(losetup --find --show -P /build/final.img)
+          NAME=$(basename "${LOOP}")
+          for i in $(seq 1 8); do
+            if [ -f /sys/class/block/${NAME}p${i}/dev ]; then
+              IFS=: read -r major minor < /sys/class/block/${NAME}p${i}/dev
+              [ -b /dev/${NAME}p${i} ] || mknod /dev/${NAME}p${i} b "${major}" "${minor}"
+            fi
+          done
+
+          mkdir -p /mnt/rpi
+          mount "${LOOP}p2" /mnt/rpi
+          for d in dev sys proc dev/pts; do mount --bind /$d /mnt/rpi/$d; done
+
+          mkdir -p /mnt/rpi/tmp/pkg
+          cp /update.wtf /mnt/rpi/tmp/pkg/
+          chroot /mnt/rpi /usr/bin/qemu-aarch64-static /bin/bash -c \
+            'cd /tmp/pkg && unzip -qo update.wtf && chmod +x update.sh && ./update.sh'
+
+          # What the device knows about itself (ADR-016).
+          cat > /mnt/rpi/etc/dirty-release <<RELEASE
+          DIRTY_VERSION=${VERSION}
+          DIRTY_COMMIT=$(echo "${COMMIT}" | cut -c1-7)
+          DIRTY_BUILD=${BUILD}
+          DIRTY_BUILT_AT=$(date -u +%FT%TZ)
+          DIRTY_CHANNEL=main
+          DIRTY_FABRIC_MIN=${DIRTY_FABRIC_MIN:-0.1.0}
+          RELEASE
+
+          # Capability gate. An image that cannot shape traffic or move the AP
+          # channel cannot do its job — fail here rather than shipping it.
+          echo "--- capability gate"
+          chroot /mnt/rpi /usr/bin/qemu-aarch64-static /bin/bash -c '
+            set -e
+            modinfo sch_cake  > /dev/null || { echo "FATAL: sch_cake missing";  exit 1; }
+            modinfo wireguard > /dev/null || { echo "FATAL: wireguard missing"; exit 1; }
+            command -v nft     > /dev/null || { echo "FATAL: nft missing";     exit 1; }
+            command -v tc      > /dev/null || { echo "FATAL: tc missing";      exit 1; }
+            command -v hostapd > /dev/null || { echo "FATAL: hostapd missing"; exit 1; }
+            command -v dnsmasq > /dev/null || { echo "FATAL: dnsmasq missing"; exit 1; }
+            test -f /opt/dirty/current/src/dirty/__init__.py || { echo "FATAL: app not installed"; exit 1; }
+            echo "capability gate: OK"
+          '
+
+          # The AP must not depend on the daemon (ADR-011). Assert it in the
+          # image rather than discovering otherwise on a device.
+          echo "--- anchor gate"
+          if grep -qE '^(Requires|BindsTo|PartOf)=.*dirty\.service' \
+               /mnt/rpi/etc/systemd/system/hostapd.service.d/*.conf 2>/dev/null; then
+            echo "FATAL: hostapd depends on dirty.service — the AP must be the anchor"
+            exit 1
+          fi
+          echo "anchor gate: OK"
+
+          rm -rf /mnt/rpi/tmp/pkg
+          for d in dev/pts dev sys proc ''; do umount -l /mnt/rpi/$d || true; done
+          losetup -d "${LOOP}"
+          mv /build/final.img /dirty.img
+          rm -rf /build
+          INNER
+          docker cp "${CID}:/dirty.img" "${{ steps.names.outputs.image }}"
+          docker rm -f "${CID}"
+
+      - name: Compress and checksum
+        run: |
+          set -euo pipefail
+          zstd -T0 -${{ inputs.compression_level }} --rm \
+            "${{ steps.names.outputs.image }}" -o "${{ steps.names.outputs.image }}.zst"
+          sha256sum "${{ steps.names.outputs.image }}.zst" \
+                    "${{ steps.names.outputs.package }}" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Generate manifest
+        run: |
+          ./scripts/gen_manifest.sh \
+            "${{ inputs.version }}" \
+            "${{ steps.names.outputs.image }}.zst" \
+            "${{ steps.names.outputs.package }}"
+
+      - name: Upload artifact
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dirty-${{ inputs.version }}
+          retention-days: 14
+          path: |
+            ${{ steps.names.outputs.image }}.zst
+            ${{ steps.names.outputs.package }}
+            manifest.json
+            SHA256SUMS
+
+      # No continue-on-error. A publish failure must fail the run — a green run
+      # with no assets is worse than a red one.
+      - name: Publish immutable release
+        if: ${{ inputs.publish }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: v${{ inputs.version }}
+          make_latest: true
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            ${{ steps.names.outputs.image }}.zst
+            ${{ steps.names.outputs.package }}
+            manifest.json
+            SHA256SUMS
+
+  fabric:
+    # Two ends of one protocol: they ship together, at the same version.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Lowercase repository name
+        id: repo
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: ${{ inputs.publish }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push fabric
+        uses: docker/build-push-action@v6
+        with:
+          context: fabric
+          push: ${{ inputs.publish }}
+          tags: ghcr.io/${{ steps.repo.outputs.name }}/fabric:${{ inputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

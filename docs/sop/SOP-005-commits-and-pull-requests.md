@@ -68,13 +68,20 @@ chore: wip                         ← not a change anyone can review
   commit without holding the whole PR in their head.
 - **No commented-out code.** Git remembers it.
 - **No `[skip ci]`** on anything that touches `appliance/`, `fabric/`, or
-  `scripts/`. Skipping the bake is how an unbuildable commit reaches `master`.
+  `scripts/`. Skipping the bake is how an unbuildable commit reaches `main`.
 - Fixups get squashed before review, not after.
 
 ## Pull requests
 
-**All PRs target `master`.** There is no other branch
+**All PRs target `main`.** There is no other branch
 ([`../versioning.md`](../versioning.md)).
+
+### Ownership and follow-through
+
+Opening a PR creates an ownership obligation. Its author checks CI and review
+activity at least every 30 minutes, responds to actionable feedback, fixes
+failures, and follows the PR through until it is merged or closed. Do not leave
+a PR for someone else to discover after its checks fail or a reviewer comments.
 
 ### Before opening
 
@@ -131,10 +138,10 @@ in the description and flag what to read first.
 
 ## Merging
 
-- Squash merge. `master` history is one commit per change, and the squash subject
+- Squash merge. `main` history is one commit per change, and the squash subject
   becomes the changelog entry — check it before confirming.
 - Green CI. Never merge red, never merge with the bake skipped.
 - Delete the branch.
 
-Every merge to `master` publishes an immutable release
+Every merge to `main` publishes an immutable release
 ([SOP-008](SOP-008-release-and-ota.md)). Merging is shipping. Treat it that way.

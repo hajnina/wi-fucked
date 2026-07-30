@@ -2,7 +2,7 @@
 
 ## Merging is shipping
 
-There is one channel. **Every merge to `master` that touches buildable paths
+There is one channel. **Every merge to `main` that touches buildable paths
 publishes an immutable release** that devices in the field will install. There is
 no staging branch to catch a mistake ([`../versioning.md`](../versioning.md)).
 
@@ -10,7 +10,7 @@ If you are not ready for users to have it, do not merge it.
 
 ## How a release happens
 
-You do not cut releases by hand. On push to `master`:
+You do not cut releases by hand. On push to `main`:
 
 1. `next_version.sh` reads the last `vX.Y.Z` tag and scans commits since it.
 2. Conventional-commit types determine the bump — `feat!:` major, `feat:` minor,
@@ -21,7 +21,7 @@ You do not cut releases by hand. On push to `master`:
 6. The `fabric` container is pushed at the same version.
 
 The version lives in the **git tag**, not in a file. Nothing commits back to
-`master` during a release, so there is no push race to lose.
+`main` during a release, so there is no push race to lose.
 
 ## Release assets
 

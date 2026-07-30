@@ -40,7 +40,7 @@ def _run(repo: Path, *args: str) -> dict[str, str]:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    _git(tmp_path, "init", "-q", "-b", "master")
+    _git(tmp_path, "init", "-q", "-b", "main")
     _git(tmp_path, "config", "user.email", "test@invalid")
     _git(tmp_path, "config", "user.name", "test")
     _commit(tmp_path, "chore: initial")

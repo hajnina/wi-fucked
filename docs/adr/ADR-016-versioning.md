@@ -1,6 +1,6 @@
 # ADR-016 — Tag-derived SemVer, one channel, immutable releases
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-018](ADR-018-main-release-channel.md)
 **Date:** 2026-07-30
 
 ## Context

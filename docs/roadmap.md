@@ -40,7 +40,7 @@ ADRs.
 
 ### Exit criterion
 
-A push to `master` produces an image that, on a real Pi Zero 2W:
+A push to `main` produces an image that, on a real Pi Zero 2W:
 
 1. boots and brings up the Stable SSIDs within ~40 s
 2. serves the dashboard

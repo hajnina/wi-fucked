@@ -36,7 +36,7 @@ cat > "${OUTPUT}" <<EOF
   "version": "${VERSION}",
   "released_at": "${BUILT_AT}",
   "commit": "${COMMIT}",
-  "channel": "master",
+  "channel": "main",
   "image_url": "${BASE}/$(basename "${IMAGE}")",
   "package_url": "${BASE}/$(basename "${PACKAGE}")",
   "sha256": {

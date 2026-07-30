@@ -2,7 +2,7 @@
 #
 # Derive the next version from git tags and conventional commits (ADR-016).
 #
-# The source of truth is an annotated tag `vX.Y.Z` on master — not a file. That
+# The source of truth is an annotated tag `vX.Y.Z` on main — not a file. That
 # is why there is no VERSION file to bump, nothing committed back to the branch
 # being built, and no push race to lose.
 #
