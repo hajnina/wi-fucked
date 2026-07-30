@@ -59,8 +59,14 @@ python3 -m pytest appliance/tests/scenarios/ -q || fail "scenario tests"
 step "Package builder"
 TMP_PKG="$(mktemp -d)/smoke.wtf"
 ./scripts/build_package.sh 0.0.0-smoke "${TMP_PKG}" > /dev/null || fail "build_package"
-for required in update.sh NEWVERSION APP.zip apt_deps.txt py_deps.txt; do
-    unzip -l "${TMP_PKG}" | grep -q "${required}" || fail "package missing ${required}"
+
+# List once into a variable rather than piping per entry. `unzip -l | grep -q`
+# is racy under `set -o pipefail`: grep exits on its first match, unzip takes
+# SIGPIPE, and the pipeline reports 141 — a failure that depends on scheduling
+# rather than on the package. -F because the '.' in APP.zip is a literal.
+PKG_LISTING="$(unzip -l "${TMP_PKG}")"
+for required in update.sh NEWVERSION APP.zip apt_deps.txt py_deps.txt stage-custom; do
+    grep -qF -- "${required}" <<< "${PKG_LISTING}" || fail "package missing ${required}"
 done
 rm -rf "$(dirname "${TMP_PKG}")"
 echo "Package contents OK"
