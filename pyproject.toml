@@ -1,0 +1,39 @@
+[project]
+name = "dirty"
+description = "DIRTY -> BALANCED: an autonomous connectivity appliance"
+requires-python = ">=3.11"
+dynamic = ["version"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["appliance/src", "fabric/src"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle, pyflakes
+    "I",             # import sorting
+    "UP",            # pyupgrade
+    "B",             # bugbear
+    "S",             # bandit — this box terminates hostile public Wi-Fi
+    "SIM",           # simplify
+    "RUF",
+]
+ignore = [
+    # Broad excepts are deliberate in this codebase: a control-plane failure
+    # must degrade adaptivity, never take the network down (ADR-008). Every one
+    # of them logs a reason and falls back — that is enforced in review, which
+    # is a better tool for it than a linter.
+    "BLE001",
+    # subprocess use is inherent: enforce/ programs tc, nft and ip. Argument
+    # lists are constructed from typed values, never from user input.
+    "S603", "S607",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"appliance/tests/**" = ["S101"]  # asserts are the point of a test
+
+[tool.pytest.ini_options]
+testpaths = ["appliance/tests"]
+pythonpath = ["appliance/src"]
+filterwarnings = ["error::DeprecationWarning:dirty.*"]
