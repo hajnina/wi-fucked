@@ -93,7 +93,7 @@ Start here, in this order:
 
 ## Releases
 
-One channel. Every push to `master` produces one immutable release, versioned from
+One channel. Every push to `main` produces one immutable release, versioned from
 conventional commits. Latest image and update package:
 
 ```

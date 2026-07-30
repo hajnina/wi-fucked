@@ -6,8 +6,11 @@ to do, the rule wins.
 
 ## Git
 
-**Never run git commands unless the user explicitly asks.** Git is off-limits by
-default.
+**Never run git commands unless the user explicitly asks, or to own an open
+pull request.** Once a pull request exists, its author is responsible for it:
+make one CI-and-review check five minutes after opening it or pushing an update,
+then make one check every 30 minutes until it is merged or closed. Address
+actionable feedback and failures. Git is otherwise off-limits by default.
 
 ## Standard Operating Procedures — read these
 
@@ -197,10 +200,10 @@ It does *not* mean "a big change."
 
 ## Branch rules
 
-**One branch: `master`. All pull requests target `master`.** There is no `alpha`,
+**One branch: `main`. All pull requests target `main`.** There is no `alpha`,
 no `beta`, no `develop`. One channel, one release stream.
 
-Every push to `master` that touches buildable paths produces one immutable release.
+Every push to `main` that touches buildable paths produces one immutable release.
 Releases are never deleted or overwritten. ([`docs/versioning.md`](docs/versioning.md))
 
 ## Testing rules

@@ -29,6 +29,7 @@ See [SOP-007](../sop/SOP-007-architectural-decisions.md).
 | [015](ADR-015-boot-count-factory-reset.md) | Factory reset by boot count, WAN config only | Accepted |
 | [016](ADR-016-versioning.md) | Tag-derived SemVer, one channel, immutable releases | Accepted |
 | [017](ADR-017-conventional-commits.md) | Conventional commits mandatory and CI-enforced | Accepted |
+| [018](ADR-018-main-release-channel.md) | Main is the sole release channel | Accepted |
 
 ⚠ — rests on driver behaviour that is expected but **not yet verified on
 hardware**. Expect superseding ADRs once [`../radio-spike.md`](../radio-spike.md)

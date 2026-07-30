@@ -43,7 +43,7 @@ The detail is in the SOPs; this is what gets a PR sent back most often.
 ## Workflow
 
 ```bash
-git checkout master && git pull origin master
+git checkout main && git pull origin main
 git checkout -b feat/short-description
 
 # work, following SOP-002 and SOP-003
@@ -52,11 +52,11 @@ git checkout -b feat/short-description
 git push -u origin feat/short-description
 ```
 
-Open a PR against `master`. There is no other branch. Fill in the description
+Open a PR against `main`. There is no other branch. Fill in the description
 template from [SOP-005](sop/SOP-005-commits-and-pull-requests.md) — What, Why, How,
 Verification, Risk.
 
-**Every merge to `master` publishes a release that devices will install.** If you
+**Every merge to `main` publishes a release that devices will install.** If you
 are not ready for users to have it, do not merge it.
 
 ## Commits

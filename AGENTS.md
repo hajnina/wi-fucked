@@ -20,7 +20,7 @@ Enough to orient; not enough to work from.
   away.
 - **The control plane is Python; the data plane is the kernel.** No packet is ever
   touched by Python.
-- **One branch: `master`.** Every merge publishes an immutable release.
+- **One branch: `main`.** Every merge publishes an immutable release.
 - **Conventional commits are mandatory** — the release version is derived from them.
 - **`MOCK_HW=1` is the primary development path.** Nothing requires a Pi to test.
 

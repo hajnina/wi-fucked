@@ -1,0 +1,154 @@
+# The one release channel.
+#
+# Every push to main that touches buildable paths publishes one immutable
+# release that devices will install. Merging is shipping — there is no staging
+# branch to catch a mistake (SOP-008).
+
+name: Main Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'appliance/**'
+      - 'fabric/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
+      - '.github/builder.Dockerfile'
+      - 'run_all_tests.sh'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Bake without publishing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+# Never cancel a release in progress: a half-published release is worse than a
+# queued one.
+concurrency:
+  group: main-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      tag: ${{ steps.next.outputs.tag }}
+      bump: ${{ steps.next.outputs.bump }}
+      publish: ${{ steps.decide.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Derived from the last tag plus conventional commits since it. Nothing is
+      # committed back to main, so there is no push race to lose (ADR-016).
+      - name: Compute next version
+        id: next
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ./scripts/next_version.sh --github --rc
+          else
+            ./scripts/next_version.sh --github
+          fi
+
+      - name: Decide whether to publish
+        id: decide
+        run: echo "publish=${{ inputs.dry_run != true }}" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Release ${{ steps.next.outputs.version }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Previous | ${{ steps.next.outputs.previous }} |"
+            echo "| Bump | ${{ steps.next.outputs.bump }} |"
+            echo "| Publish | ${{ steps.decide.outputs.publish }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Tests gate publish. Gutiva skips its suite on pushes to a release branch,
+  # which means the branch devices follow is the one that was never tested.
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet -r appliance/requirements-dev.txt
+      - run: ./run_all_tests.sh 2>&1 | tee test-output.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test-output.log
+
+  bake:
+    needs: [version, test]
+    uses: ./.github/workflows/reusable_image_pipeline.yml
+    permissions:
+      contents: write
+      packages: write
+    with:
+      version: ${{ needs.version.outputs.version }}
+      publish: ${{ fromJSON(needs.version.outputs.publish) }}
+      # Releases are downloaded once and flashed; spending the extra minutes is
+      # worth it for every user's download.
+      compression_level: 19
+
+  changelog:
+    needs: [version, bake]
+    if: ${{ fromJSON(needs.version.outputs.publish) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Generated from the same conventional-commit scan that produced the
+      # version, so it cannot drift from what actually shipped.
+      - name: Regenerate changelog
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.version.outputs.version }}"
+          PREVIOUS=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "v${VERSION}^" 2>/dev/null || true)
+          RANGE="${PREVIOUS:+${PREVIOUS}..}v${VERSION}"
+
+          {
+            echo "## v${VERSION} — $(date -u +%Y-%m-%d)"
+            echo ""
+            for type in feat fix perf refactor docs test build ci chore; do
+              entries=$(git log --format='%s' "${RANGE}" \
+                        | grep -E "^${type}(\([^)]*\))?!?: " || true)
+              [ -z "${entries}" ] && continue
+              echo "### ${type}"
+              echo "${entries}" | sed -E "s/^${type}(\([^)]*\))?!?: /- /"
+              echo ""
+            done
+            echo ""
+            [ -f CHANGELOG.md ] && cat CHANGELOG.md
+          } > CHANGELOG.new
+          mv CHANGELOG.new CHANGELOG.md
+
+      - name: Commit changelog
+        run: |
+          git config user.name  "dirty-bot"
+          git config user.email "bot@wi-fucked.invalid"
+          git add CHANGELOG.md
+          # [skip ci] is safe here and only here: this commit touches no
+          # buildable path, so re-baking would produce an identical image.
+          git commit -m "docs: changelog for v${{ needs.version.outputs.version }} [skip ci]" || exit 0
+          for delay in 2 4 8 16; do
+            git push origin main && exit 0
+            sleep "${delay}"
+            git pull --rebase origin main
+          done
+          git push origin main

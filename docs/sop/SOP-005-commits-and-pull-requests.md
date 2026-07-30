@@ -68,13 +68,89 @@ chore: wip                         ← not a change anyone can review
   commit without holding the whole PR in their head.
 - **No commented-out code.** Git remembers it.
 - **No `[skip ci]`** on anything that touches `appliance/`, `fabric/`, or
-  `scripts/`. Skipping the bake is how an unbuildable commit reaches `master`.
+  `scripts/`. Skipping the bake is how an unbuildable commit reaches `main`.
 - Fixups get squashed before review, not after.
 
 ## Pull requests
 
-**All PRs target `master`.** There is no other branch
+**All PRs target `main`.** There is no other branch
 ([`../versioning.md`](../versioning.md)).
+
+### Ownership and follow-through
+
+Opening a PR creates an ownership obligation. Its author makes one CI-and-review
+check five minutes after opening the PR or pushing an update, then makes one
+check every 30 minutes. They respond to actionable feedback, fix failures, and
+follow the PR through until it is merged or closed. Do not leave a PR for someone
+else to discover after its checks fail or a reviewer comments.
+
+#### Waiting for CI without polling by hand
+
+Don't burn a check-in on "still running." Block on a single script that returns
+exactly once, when every check has left the pending state, then act on whatever
+it reports. It must not silently loop forever — it runs a preflight first, and
+it treats "the query broke" as a different outcome from "still pending":
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+
+PR="${1:?usage: wait-for-ci.sh <PR_NUMBER>}"
+MAX_WAIT_SECONDS=5400   # 90 min ceiling — the bake job alone allows up to 120
+POLL_SECONDS=20
+
+# --- preflight: only start a watch we're certain can return ----------------
+command -v gh >/dev/null 2>&1 || { echo "PREFLIGHT FAILED: gh CLI not found"; exit 2; }
+gh auth status >/dev/null 2>&1 || { echo "PREFLIGHT FAILED: gh not authenticated"; exit 2; }
+
+# Use gh's *built-in* --jq (no dependency on a system jq — a prior version of
+# this script piped to an external jq that didn't exist in one environment
+# and looped silently forever, since the failure was swallowed by 2>&1).
+# Prove the exact query resolves before committing to the loop.
+probe=$(gh pr checks "${PR}" --json bucket --jq 'length' 2>&1) || {
+  echo "PREFLIGHT FAILED: 'gh pr checks ${PR}' did not return data: ${probe}"
+  exit 2
+}
+[ "${probe}" -gt 0 ] 2>/dev/null || {
+  echo "PREFLIGHT FAILED: PR #${PR} has no checks registered yet"
+  exit 2
+}
+echo "preflight OK: PR #${PR} has ${probe} check(s); watching..."
+
+# --- watch, bounded, and distinguishes "pending" from "broken" -------------
+elapsed=0
+while true; do
+  done_flag=$(gh pr checks "${PR}" --json bucket --jq 'all(.[]; .bucket != "pending")' 2>&1)
+  if [ "${done_flag}" = "true" ]; then
+    echo "=== ALL CI FLOWS COMPLETE (after ${elapsed}s) ==="
+    gh pr checks "${PR}"
+    exit 0
+  fi
+  if [ "${done_flag}" != "false" ]; then
+    echo "WATCH ABORTED after ${elapsed}s: gh query failed: ${done_flag}"
+    exit 1
+  fi
+  sleep "${POLL_SECONDS}"
+  elapsed=$((elapsed + POLL_SECONDS))
+  if [ "${elapsed}" -ge "${MAX_WAIT_SECONDS}" ]; then
+    echo "WATCH TIMED OUT after ${elapsed}s — CI still pending, check manually"
+    gh pr checks "${PR}"
+    exit 1
+  fi
+done
+```
+
+Run it in the background (Claude Code: `Bash` with `run_in_background: true`, or
+plain `nohup ... &` at a terminal) so it produces one notification when CI settles
+instead of a stream of "still pending" noise. This satisfies the five-minute and
+30-minute check-in cadence above without babysitting a terminal — but it does not
+replace follow-through: read the result, fix failures, and keep the PR moving.
+
+If you also want a fixed-cadence backstop independent of this loop (e.g. across a
+longer stretch where you might be away), Claude Code's `CronCreate` tool can
+schedule a recurring "check PR #N, fix what's red" prompt — but note it is
+session-only: the job dies with the session, so it does not substitute for
+watching the PR through to green yourself.
 
 ### Before opening
 
@@ -131,10 +207,10 @@ in the description and flag what to read first.
 
 ## Merging
 
-- Squash merge. `master` history is one commit per change, and the squash subject
+- Squash merge. `main` history is one commit per change, and the squash subject
   becomes the changelog entry — check it before confirming.
 - Green CI. Never merge red, never merge with the bake skipped.
 - Delete the branch.
 
-Every merge to `master` publishes an immutable release
+Every merge to `main` publishes an immutable release
 ([SOP-008](SOP-008-release-and-ota.md)). Merging is shipping. Treat it that way.

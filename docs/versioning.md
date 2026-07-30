@@ -5,7 +5,7 @@ the operational reference.
 
 ## One channel
 
-**`master` is the only branch.** Every push to it that touches buildable paths
+**`main` is the only branch.** Every push to it that touches buildable paths
 produces exactly one immutable release. There is no `alpha`, no `beta`, no
 `develop`, and no staging.
 
@@ -24,16 +24,16 @@ commits since it:
 
 Highest bump found in the range wins. A repository with no tags starts at `0.1.0`.
 
-**Nothing is committed back to `master` during a release.** No `VERSION` file, no
+**Nothing is committed back to `main` during a release.** No `VERSION` file, no
 bot commit, no `[skip ci]`, no push race.
 
 ## Version strings by build kind
 
 | Trigger | Version | Published |
 |---|---|---|
-| PR → `master` | `X.Y.Z-pr<N>.<sha7>` | Workflow artifact, 14-day retention |
+| PR → `main` | `X.Y.Z-pr<N>.<sha7>` | Workflow artifact, 14-day retention |
 | `workflow_dispatch` dry run | `X.Y.Z-rc.<sha7>` | Artifact only |
-| Push → `master` | `X.Y.Z` | **Immutable release**, tag `vX.Y.Z`, marked latest |
+| Push → `main` | `X.Y.Z` | **Immutable release**, tag `vX.Y.Z`, marked latest |
 
 `-pr` and `-rc` are real SemVer prereleases, so they sort *below* the release they
 precede. An OTA client comparing versions can never mistake a PR build for a
@@ -93,7 +93,7 @@ DIRTY_VERSION=1.4.0
 DIRTY_COMMIT=abc1234
 DIRTY_BUILD=42
 DIRTY_BUILT_AT=2026-07-30T14:22:11Z
-DIRTY_CHANNEL=master
+DIRTY_CHANNEL=main
 DIRTY_FABRIC_MIN=1.2.0
 ```
 
@@ -117,7 +117,7 @@ shipped.
 ## Practical notes
 
 - **Check the squash-merge subject before confirming.** That subject is what
-  reaches `master`, drives the version, and becomes the changelog entry.
+  reaches `main`, drives the version, and becomes the changelog entry.
 - **CI enforces the commit format; it cannot check your judgement.** Choosing
   `fix:` for a breaking change passes lint and ships wrong — that is caught in
   review ([SOP-006](sop/SOP-006-code-review.md)).

@@ -1,0 +1,127 @@
+# Pull-request CI. Never publishes a release.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Runs first and fails fast. The release version is derived from commit
+  # subjects, so a malformed one silently mis-versions a release (ADR-017).
+  commitlint:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check commit subjects
+        run: |
+          set -euo pipefail
+          PATTERN='^(feat|fix|perf|refactor|docs|test|build|ci|chore)(\([a-z0-9._-]+\))?!?: .+'
+          FAILED=0
+
+          while IFS= read -r subject; do
+            [ -z "${subject}" ] && continue
+            # Merge commits are generated, not authored.
+            case "${subject}" in "Merge "*) continue ;; esac
+            if ! echo "${subject}" | grep -qE "${PATTERN}"; then
+              echo "::error::Not a conventional commit: ${subject}"
+              FAILED=1
+            fi
+          done < <(git log --format='%s' origin/${{ github.base_ref }}..HEAD)
+
+          if [ "${FAILED}" -ne 0 ]; then
+            echo ""
+            echo "Format: <type>(<scope>): <subject>"
+            echo "Types:  feat fix perf refactor docs test build ci chore"
+            echo "See docs/sop/SOP-005-commits-and-pull-requests.md"
+            exit 1
+          fi
+          echo "All commit subjects are conventional."
+
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: pip install --quiet ruff
+
+      - name: Ruff
+        run: |
+          ruff check appliance/src fabric/src appliance/tests
+          ruff format --check appliance/src fabric/src appliance/tests
+
+      - name: Shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck appliance/*.sh scripts/*.sh appliance/stage-custom/opt/dirty/*.sh
+
+      - name: Actionlint
+        uses: reviewdog/action-actionlint@v1
+        with:
+          fail_level: error
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet -r appliance/requirements-dev.txt
+
+      # No hardware anywhere in the suite. A test that needs a Pi is a design
+      # problem, not a constraint (SOP-003).
+      - name: Run tests
+        run: ./run_all_tests.sh
+
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A real SemVer prerelease, so it sorts below the release it precedes and
+      # an OTA client can never mistake it for something shipped (ADR-016).
+      - name: Compute version
+        id: next
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ./scripts/next_version.sh --github --pr "${{ github.event.pull_request.number }}"
+          else
+            ./scripts/next_version.sh --github --rc
+          fi
+
+  bake:
+    needs: [lint, test, version]
+    uses: ./.github/workflows/reusable_image_pipeline.yml
+    permissions:
+      contents: write
+      packages: write
+    with:
+      version: ${{ needs.version.outputs.version }}
+      publish: false
+      compression_level: 3
+      runner_labels: '["ubuntu-24.04-arm"]'
