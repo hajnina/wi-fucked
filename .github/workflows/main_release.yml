@@ -101,6 +101,11 @@ jobs:
       # Releases are downloaded once and flashed; spending the extra minutes is
       # worth it for every user's download.
       compression_level: 19
+      # No self-hosted ARM64 runner is registered. Without this the job falls
+      # back to the reusable workflow's default self-hosted label set and
+      # queues forever waiting for a runner that doesn't exist — same fix the
+      # PR pipeline (ci.yml) already applies.
+      runner_labels: '["ubuntu-24.04-arm"]'
 
   changelog:
     needs: [version, bake]
