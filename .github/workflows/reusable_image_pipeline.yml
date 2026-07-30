@@ -232,8 +232,12 @@ jobs:
           echo "--- capability gate"
           chroot /mnt/rpi /usr/bin/qemu-aarch64-static /bin/bash -c '
             set -e
-            modinfo sch_cake  > /dev/null || { echo "FATAL: sch_cake missing";  exit 1; }
-            modinfo wireguard > /dev/null || { echo "FATAL: wireguard missing"; exit 1; }
+            # See appliance/setup_rpi.sh: uname -r inside the chroot reports
+            # the host kernel, not the Pi one, so modinfo needs -k pointed at
+            # the kernel version actually installed in the image.
+            KVER=$(ls /lib/modules | head -n1)
+            modinfo -k "${KVER}" sch_cake  > /dev/null || { echo "FATAL: sch_cake missing";  exit 1; }
+            modinfo -k "${KVER}" wireguard > /dev/null || { echo "FATAL: wireguard missing"; exit 1; }
             command -v nft     > /dev/null || { echo "FATAL: nft missing";     exit 1; }
             command -v tc      > /dev/null || { echo "FATAL: tc missing";      exit 1; }
             command -v hostapd > /dev/null || { echo "FATAL: hostapd missing"; exit 1; }
@@ -328,6 +332,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The default "docker" driver can't export a GHA cache; docker-container
+      # can. Without this, cache-to below fails the build outright.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
 
       - name: Build and push fabric
         uses: docker/build-push-action@v6

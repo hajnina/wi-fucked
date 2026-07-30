@@ -89,8 +89,13 @@ sed -i 's/#RuntimeMaxUse=/RuntimeMaxUse=32M/' /etc/systemd/journald.conf || true
 # CI asserts the same things, but a broken base image should not get that far.
 
 echo "--- verifying data-plane capability"
-modinfo sch_cake > /dev/null || { echo "FATAL: sch_cake missing"; exit 1; }
-modinfo wireguard > /dev/null || { echo "FATAL: wireguard missing"; exit 1; }
+# `uname -r` inside the qemu-aarch64-static chroot reports the HOST kernel
+# (the syscall isn't virtualized), not the Pi kernel whose modules are on
+# disk here. Plain `modinfo` looks up /lib/modules/$(uname -r) and always
+# misses. Point it at the kernel version actually installed in the image.
+KVER=$(ls /lib/modules | head -n1)
+modinfo -k "${KVER}" sch_cake  > /dev/null || { echo "FATAL: sch_cake missing";  exit 1; }
+modinfo -k "${KVER}" wireguard > /dev/null || { echo "FATAL: wireguard missing"; exit 1; }
 command -v nft > /dev/null || { echo "FATAL: nft missing"; exit 1; }
 command -v tc  > /dev/null || { echo "FATAL: tc missing"; exit 1; }
 command -v hostapd > /dev/null || { echo "FATAL: hostapd missing"; exit 1; }
