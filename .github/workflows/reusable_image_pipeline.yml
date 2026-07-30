@@ -235,7 +235,7 @@ jobs:
             # See appliance/setup_rpi.sh: uname -r inside the chroot reports
             # the host kernel, not the Pi one, so modinfo needs -k pointed at
             # the kernel version actually installed in the image.
-            KVER=$(ls /lib/modules | head -n1)
+            KVER=$(find /lib/modules -mindepth 1 -maxdepth 1 -printf "%f\n" | head -n1)
             modinfo -k "${KVER}" sch_cake  > /dev/null || { echo "FATAL: sch_cake missing";  exit 1; }
             modinfo -k "${KVER}" wireguard > /dev/null || { echo "FATAL: wireguard missing"; exit 1; }
             command -v nft     > /dev/null || { echo "FATAL: nft missing";     exit 1; }

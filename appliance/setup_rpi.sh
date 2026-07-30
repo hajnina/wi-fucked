@@ -93,7 +93,7 @@ echo "--- verifying data-plane capability"
 # (the syscall isn't virtualized), not the Pi kernel whose modules are on
 # disk here. Plain `modinfo` looks up /lib/modules/$(uname -r) and always
 # misses. Point it at the kernel version actually installed in the image.
-KVER=$(ls /lib/modules | head -n1)
+KVER=$(find /lib/modules -mindepth 1 -maxdepth 1 -printf '%f\n' | head -n1)
 modinfo -k "${KVER}" sch_cake  > /dev/null || { echo "FATAL: sch_cake missing";  exit 1; }
 modinfo -k "${KVER}" wireguard > /dev/null || { echo "FATAL: wireguard missing"; exit 1; }
 command -v nft > /dev/null || { echo "FATAL: nft missing"; exit 1; }
