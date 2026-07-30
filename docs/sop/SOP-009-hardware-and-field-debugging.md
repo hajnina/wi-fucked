@@ -1,0 +1,136 @@
+# SOP-009 — Hardware and field debugging
+
+For when it works under `MOCK_HW=1` and not on a Pi — or works on your desk and
+not in a van.
+
+## Before assuming the code is wrong
+
+Check the cheap explanations first. In this system they are usually right.
+
+| Symptom | Check first |
+|---|---|
+| Random instability, resets, USB dropouts | **Undervoltage.** `vcgencmd get_throttled` — anything non-zero. A marginal PSU explains a large share of "flaky appliance" reports. |
+| Works, then degrades over days | SD card. `dmesg \| grep -i mmc`, filesystem errors. |
+| Interface missing after replug | Re-enumeration — is something keying off `ifname`? ([ADR-002](../adr/ADR-002-atomic-identity.md)) |
+| Throughput far below expectation | 2.4 GHz congestion. Are you in SHARED profile, splitting airtime? ([`../hardware.md`](../hardware.md)) |
+| AP unreachable but device up | `systemctl status hostapd` — it is independent of `dirty.service` by design, so check it independently. |
+
+## The device tells you first
+
+Do not start with `tcpdump`. Start with what the appliance already recorded.
+
+```bash
+# What does it think is going on?
+curl -s localhost:8080/api/state | jq
+
+# Why did it do that? — the decision journal
+curl -s localhost:8080/api/decisions?limit=50 | jq
+
+# Structured logs
+journalctl -u dirty -n 500 --no-pager
+journalctl -u dirty -n 500 -o json | jq 'select(.WORKFLOW=="backup_activation")'
+```
+
+The decision journal exists precisely so that "why did it activate BACKUP?" is a
+lookup rather than an investigation ([ADR-009](../adr/ADR-009-decision-records.md)).
+If it does not answer the question, that is a logging defect worth fixing in the
+same session — file it.
+
+## Diagnostics bundle
+
+For anything you cannot resolve at the console, or anything a user reports:
+
+```bash
+curl -s localhost:8080/api/diagnostics/bundle -o bundle.tar.gz
+```
+
+Contains logs, decision journal, telemetry rollups, kernel network state
+(`tc qdisc show`, `nft list ruleset`, `ip rule`, `ip route show table all`),
+radio state, and `/etc/dirty-release`. **No credentials and no payload data** —
+it is safe to attach to an issue. Verify that stays true if you extend it.
+
+## Inspecting kernel state
+
+The daemon's model and the kernel's reality can disagree — that disagreement is
+usually the bug. `enforce/` reconciles them, so a persistent divergence means
+reconciliation is not seeing something.
+
+```bash
+tc qdisc show                      # is CAKE where you expect, at what rate?
+tc -s qdisc show dev wlan0         # drops, backlog — bufferbloat evidence
+nft list ruleset                   # marks and classification
+ip rule show                       # policy routing
+ip route show table all            # one table per atomic
+iw dev                             # actual radio state: interfaces, channels
+wg show                            # tunnel: handshakes, transfer, endpoint
+```
+
+Compare against `/api/state`. Where they differ, you have found something.
+
+## Radio problems
+
+The most driver-dependent part of the system, and the least predictable.
+
+```bash
+iw dev                             # interfaces and their channels
+iw dev wlan0 info
+dmesg | grep -i brcmfmac           # firmware and driver complaints
+hostapd_cli status                 # AP state, channel, connected stations
+hostapd_cli list_sta               # who is associated
+```
+
+**Check the spike findings before theorising.** [`../radio-spike.md`](../radio-spike.md)
+records what this chip actually does — multi-BSS, AP+STA concurrency, CSA — as
+measured, not assumed. A behaviour contradicting the findings means either a
+firmware difference worth recording, or a bug.
+
+If you learn something new about the radio, **add it to the spike findings in the
+same session.** That document is the team's shared model of the hardware, and it
+is only worth anything if it stays accurate.
+
+## Reproducing field conditions on a desk
+
+Most control-loop bugs are reproducible without a van, and reproducing beats
+speculating.
+
+```bash
+# Degrade a link realistically: latency, jitter, loss
+sudo tc qdisc add dev wlan0 root netem delay 700ms 200ms loss 17%
+
+# Constrain capacity
+sudo tc qdisc add dev wlan0 root tbf rate 1400kbit burst 32kbit latency 400ms
+
+# Remove a WAN abruptly, the way a van does
+sudo ip link set wlan0 down
+```
+
+Then watch the decision journal and confirm the system reacted the way the
+scenario tests say it should. **If you can reproduce it, write it as a scenario
+test** ([SOP-003](SOP-003-testing.md)) — a hardware bug that becomes a mock-level
+regression test will never come back.
+
+## Spikes
+
+When behaviour genuinely cannot be determined from documentation or existing
+findings, do a spike rather than guessing in a PR.
+
+A spike is: timeboxed (default one week), on real hardware, with a written
+findings document as the deliverable. It answers specific questions decided
+in advance. Its code is throwaway and is not merged.
+
+Spike output amends the relevant ADRs
+([SOP-007](SOP-007-architectural-decisions.md)) — this is one of the main legitimate
+reasons to supersede one. [`../radio-spike.md`](../radio-spike.md) is the worked
+example and the template.
+
+## Safety on real hardware
+
+- **Never test OTA from a clean image only.** Upgrade from the previous release is
+  the path users take, and the one that breaks
+  ([SOP-008](SOP-008-release-and-ota.md)).
+- Keep a known-good SD card. Recovery beats debugging a bricked device.
+- If you change the AP configuration on a device you are connected to over its own
+  Wi-Fi, you will disconnect yourself. Use serial or Ethernet-over-USB for
+  radio work.
+- The appliance sees all user traffic. When capturing packets, capture what you
+  need, and delete it when done. Never attach a capture to an issue.

@@ -1,0 +1,129 @@
+/* Airgapped: every byte served from the Pi. No CDN, no remote fonts.
+   The appliance is often the thing between the user and the Internet, so a
+   dashboard that needs the Internet is useless exactly when it is needed. */
+
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --line: #262b36;
+  --text: #e6e9ef;
+  --muted: #8b93a3;
+  --accent: #5cc8a8;
+  --warn: #e0a355;
+  --alert: #e06c75;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --line: #e2e5ea;
+    --text: #1a1d23;
+    --muted: #666e7d;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 1rem 3rem;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+header {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem 0 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+h1 { margin: 0; font-size: 1.5rem; letter-spacing: 0.02em; }
+h2 { margin: 0 0 0.5rem; font-size: 0.8rem; text-transform: uppercase;
+     letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+.arrow { color: var(--accent); }
+.sub { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.85rem; }
+
+main { max-width: 1100px; margin: 0 auto; }
+section { margin: 2rem 0; }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem;
+}
+.card.alert { border-color: var(--alert); }
+
+.big { margin: 0; font-size: 1.6rem; font-weight: 600; }
+.big small { font-size: 0.85rem; font-weight: 400; color: var(--muted); }
+.muted { color: var(--muted); font-size: 0.85rem; }
+.note { margin-top: 0.75rem; }
+
+.empty {
+  background: var(--panel);
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 1.25rem;
+  color: var(--muted);
+}
+
+/* Wide content scrolls inside its own container; the page never scrolls
+   sideways on a phone, which is the only screen most users will have. */
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+
+table { width: 100%; border-collapse: collapse; background: var(--panel); }
+th, td { padding: 0.6rem 0.75rem; text-align: left; white-space: nowrap; }
+th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+     color: var(--muted); border-bottom: 1px solid var(--line); }
+tbody tr + tr td { border-top: 1px solid var(--line); }
+td .muted { display: block; font-size: 0.75rem; }
+tr.absent { opacity: 0.45; }
+
+.pill {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  border: 1px solid var(--line);
+}
+.pill.warn { color: var(--warn); border-color: var(--warn); }
+.mode-normal { color: var(--accent); border-color: var(--accent); }
+.mode-backup { color: var(--warn); border-color: var(--warn); }
+.mode-unused { color: var(--muted); }
+
+.decisions { display: flex; flex-direction: column; gap: 0.75rem; }
+
+.decision {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+}
+.decision.spend { border-left-color: var(--warn); }
+.decision.none { border-left-color: var(--alert); }
+.decision h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
+.decision .reason { margin: 0 0 0.5rem; color: var(--muted); font-size: 0.85rem; }
+.decision dl {
+  margin: 0; display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.25rem 1rem; font-size: 0.8rem;
+}
+.decision dt { color: var(--muted); }
+.decision dd { margin: 0 0 0.35rem; }
+
+footer {
+  max-width: 1100px;
+  margin: 3rem auto 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}

@@ -1,0 +1,16 @@
+# Factory reset by power cycle (ADR-015). Runs early so a user holding the
+# power switch gets counted before anything else can fail.
+
+[Unit]
+Description=DIRTY boot counter and factory reset
+DefaultDependencies=no
+After=local-fs.target
+Before=dirty.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/dirty/bootcount.sh
+
+[Install]
+WantedBy=sysinit.target
