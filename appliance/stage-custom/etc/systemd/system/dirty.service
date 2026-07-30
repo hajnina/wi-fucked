@@ -1,0 +1,29 @@
+# The control plane.
+#
+# Note what is absent: any Before=/Requires=/PartOf= relationship with hostapd
+# or dnsmasq. The AP is the anchor and must keep serving when this unit is
+# stopped, crashed, or being updated (ADR-011).
+#
+# Note also the absence of ExecStop cleanup. Kernel state outlives this process
+# deliberately, so a control-plane failure degrades adaptivity rather than
+# causing an outage (ADR-008). Do not add teardown here.
+
+[Unit]
+Description=DIRTY connectivity controller
+After=network.target dirty-firstboot.service
+Wants=network.target
+
+[Service]
+Type=simple
+Environment=PYTHONPATH=/opt/dirty/current/src
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m dirty
+Restart=always
+RestartSec=5
+# A wedged control plane should be restarted, not left wedged. The network keeps
+# working across the restart either way.
+WatchdogSec=120
+StateDirectory=dirty
+
+[Install]
+WantedBy=multi-user.target
