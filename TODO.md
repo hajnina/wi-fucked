@@ -37,7 +37,16 @@ git push
 | `.github/workflows/master_release.yml` | Push to `master` → version → test → bake → one immutable release |
 | `.github/workflows/reusable_image_pipeline.yml` | The image bake, called by both |
 
-sha256: `02e749d8ac9b4c4e271a0cec2d0a764ff84cf3e9a6160ec8c64d19e4f896929f`
+sha256: `83b3901acbd09cc4fc712c81ada803874e96832b61f1c513b3d45b15884ba3eb`
+
+`ci.yml` triggers on PRs into **either `main` or `master`**, so it produces checks
+before and after the rename in item 2 — install order doesn't matter.
+`master_release.yml` is deliberately `master`-only: publishing a release from any
+other branch would break the single-channel contract
+([ADR-016](docs/adr/ADR-016-versioning.md)).
+
+Until this is done the repository has **no CI at all** — PR #1 merged with zero
+checks, because there were no workflows to run.
 
 Once installed, delete this section and `workflows.zip`.
 
