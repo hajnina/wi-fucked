@@ -1,0 +1,33 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Build artefacts — everything here is produced by the pipeline and belongs in
+# a release, never in the repository.
+*.img
+*.img.zst
+*.wtf
+*.tar.zst
+manifest.json
+SHA256SUMS
+test-output.log
+*_test_output.txt
+
+# Device state
+/var/
+state/
+*.db
+*.db-wal
+*.db-shm
+
+# Credentials. Nothing key-shaped is ever committed, and nothing key-shaped
+# is ever packaged (SOP-008).
+*.key
+*.pem
+wpa_psk
+secrets.json
+.env
