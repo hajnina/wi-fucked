@@ -15,6 +15,8 @@ from flask import Flask, jsonify, request
 
 from fabric import MIN_APPLIANCE_VERSION, __version__
 from fabric.config import ConfigError, FabricConfig, load_config
+from fabric.peers import PeerRegistry, PoolExhausted
+from fabric.wireguard import FabricWireGuard, WireGuardError
 
 _STARTED = time.monotonic()
 
@@ -32,7 +34,11 @@ def version_tuple(version: str) -> tuple[int, int, int]:
         return (0, 0, 0)
 
 
-def create_app(config: FabricConfig | None = None) -> Flask:
+def create_app(
+    config: FabricConfig | None = None,
+    registry: PeerRegistry | None = None,
+    wireguard: FabricWireGuard | None = None,
+) -> Flask:
     if config is None:
         try:
             config = load_config()
@@ -42,6 +48,13 @@ def create_app(config: FabricConfig | None = None) -> Flask:
             # means the container was started wrong (e.g. CMD run directly,
             # bypassing the entrypoint).
             raise SystemExit(f"FATAL: {exc}") from exc
+
+    # `registry` and `wireguard` are injectable so tests can drive /register
+    # without real WireGuard or root; production builds the real ones.
+    if registry is None:
+        registry = PeerRegistry()
+    if wireguard is None:
+        wireguard = FabricWireGuard(address=registry.server_address, pool_cidr=registry.pool_cidr)
 
     app = Flask(__name__)
 
@@ -109,11 +122,36 @@ def create_app(config: FabricConfig | None = None) -> Flask:
                 409,
             )
 
-        # WS-E: allocate a tunnel address, add the WireGuard peer, return the
-        # server's public key and endpoint.
-        return (
-            jsonify({"error": "peer registration not implemented", "detail": "WS-E scope"}),
-            501,
+        # Bring the interface up first: if the tunnel backend is unavailable
+        # (no NET_ADMIN, no kernel WireGuard) fail clearly without consuming an
+        # address, rather than crashing the container.
+        try:
+            wireguard.ensure_ready()
+        except WireGuardError as exc:
+            return (
+                jsonify({"error": "tunnel backend unavailable", "detail": str(exc)}),
+                503,
+            )
+
+        try:
+            allocation = registry.allocate(public_key)
+        except PoolExhausted as exc:
+            return jsonify({"error": "tunnel address pool exhausted", "detail": str(exc)}), 503
+
+        try:
+            wireguard.add_peer(public_key, allocation.address)
+        except WireGuardError as exc:
+            # The address stays allocated to this key; a retry re-adds the peer
+            # idempotently rather than leaking a fresh address.
+            return jsonify({"error": "could not add tunnel peer", "detail": str(exc)}), 503
+
+        return jsonify(
+            {
+                "assigned_address": f"{allocation.address}/32",
+                "fabric_public_key": wireguard.public_key,
+                "endpoint": config.address,
+                "tunnel_pool": registry.pool_cidr,
+            }
         )
 
     return app

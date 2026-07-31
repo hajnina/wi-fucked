@@ -4,9 +4,9 @@ Client sessions terminate here rather than at the WAN, so the client-visible IP
 never changes when the appliance switches connections. That is what makes a WAN
 swap survivable instead of a visible outage (ADR-005).
 
-WS-E owns this. Phase 0 ships the health and registration API, which is what the
-appliance needs to check compatibility and pick a server; WireGuard peer
-management is stubbed.
+WS-E owns this. It ships the health and registration API the appliance needs to
+check compatibility and pick a server, plus real WireGuard peer management:
+tunnel-address allocation and adding the appliance as a peer on ``wg0``.
 """
 
 __version__ = "0.0.0-dev"
