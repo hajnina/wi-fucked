@@ -9,7 +9,13 @@ are reflashed rather than rebooted.
 from __future__ import annotations
 
 from dirty.config import LanConfig
-from dirty.lan import derive_identity, dnsmasq_config, hostapd_config, wpa_psk_file
+from dirty.lan import (
+    derive_identity,
+    dnsmasq_config,
+    hostapd_config,
+    lan_ifname_for_profile,
+    wpa_psk_file,
+)
 from dirty.policy import BEST_EFFORT, CRITICAL, DEFAULT_PROFILES
 
 SERIAL = "10000000deadbeef"
@@ -86,6 +92,25 @@ class TestHostapdConfig:
     def test_channel_is_honoured(self):
         identity = derive_identity(SERIAL, LanConfig())
         assert "channel=11" in hostapd_config(identity, 11, "two_bss")
+
+
+class TestLanIfnameForProfile:
+    """Guards the mapping enforce/ and demand/ rely on to know which kernel
+    interface carries which service class — must track hostapd_config()
+    exactly, since a drift here would silently classify traffic wrong.
+    """
+
+    def test_two_bss_mode_gives_each_profile_its_own_bss_and_vlan_suffix(self):
+        assert lan_ifname_for_profile(BEST_EFFORT, "two_bss") == "wlan0.20"
+        assert lan_ifname_for_profile(CRITICAL, "two_bss") == "wlan0_1.10"
+
+    def test_two_psk_mode_shares_one_bss_distinguished_by_vlan_suffix(self):
+        assert lan_ifname_for_profile(BEST_EFFORT, "two_psk") == "wlan0.20"
+        assert lan_ifname_for_profile(CRITICAL, "two_psk") == "wlan0.10"
+
+    def test_honours_a_non_default_base_interface(self):
+        assert lan_ifname_for_profile(BEST_EFFORT, "two_bss", "wlan2") == "wlan2.20"
+        assert lan_ifname_for_profile(CRITICAL, "two_bss", "wlan2") == "wlan2_1.10"
 
 
 class TestDnsmasqConfig:
