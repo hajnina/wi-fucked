@@ -1,3 +1,12 @@
+## v1.0.0 — 2026-07-31
+
+### docs
+- changelog for v0.4.0 [skip ci]
+
+### chore
+- rename brand from Dirty to Wi-Fucked (#11)
+
+
 ## v0.4.0 — 2026-07-31
 
 ### feat
