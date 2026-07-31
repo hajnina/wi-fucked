@@ -18,7 +18,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from dirty.clock import Clock
+from dirty.hal.base import Hal
+from dirty.lan import lan_ifname_for_profile
+from dirty.logging import get_logger
 from dirty.policy import ServiceProfile
+
+log = get_logger("demand")
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,17 +66,72 @@ class StaticDemand(DemandEstimator):
 
 
 class CounterDemand(DemandEstimator):
-    """Derives demand from per-VLAN byte counters.
+    """Derives demand from each service class's per-VLAN byte counters.
 
-    Placeholder for WS-B. Reading counters gives *served* throughput, which is a
-    lower bound on demand — a saturated class wants more than it received, and
-    the estimator has to infer how much from queue backlog. Getting that
-    inference right is the interesting part of the work, and is not attempted
-    here.
+    Each profile's LAN traffic arrives on a VLAN subinterface whose name is
+    resolved by :func:`dirty.lan.lan_ifname_for_profile`, so this reads the same
+    interface hostapd hands the class and never reconstructs the mapping itself.
+    Demand is the rate of change of those counters between samples — the same
+    delta-over-elapsed arithmetic ``PassiveProber`` uses on the WAN side.
+
+    Directions are mirrored relative to the WAN prober: on a LAN interface,
+    bytes the interface *transmits* go out to clients (their download) and bytes
+    it *receives* come in from clients (their upload). So ``down_bps`` is the tx
+    delta and ``up_bps`` is the rx delta.
+
+    Served throughput is only a lower bound on true demand — a class held at its
+    ceiling wanted more than it got — and separating "wants little" from "wants
+    more but is capped" needs queue-depth inference the original docstring called
+    out as deliberately hard. That inference is not attempted, so ``constrained``
+    is always False here; the allocator treats served rate as observed demand,
+    which is safe (it never *over*-states what a class is asking for).
     """
 
-    def __init__(self, profiles: tuple[ServiceProfile, ...]):
+    def __init__(
+        self,
+        profiles: tuple[ServiceProfile, ...],
+        hal: Hal,
+        clock: Clock,
+        lan_mode: str = "two_bss",
+        base_interface: str = "wlan0",
+    ):
         self._profiles = profiles
+        self._hal = hal
+        self._clock = clock
+        self._lan_mode = lan_mode
+        self._base_interface = base_interface
+        #: profile name -> (monotonic_s, rx_bytes, tx_bytes)
+        self._last: dict[str, tuple[float, int, int]] = {}
 
     def sample(self) -> dict[str, ClassDemand]:
-        return {p.name: ClassDemand(p.name, down_bps=0, up_bps=0) for p in self._profiles}
+        now = self._clock.now()
+        result: dict[str, ClassDemand] = {}
+        for profile in self._profiles:
+            ifname = lan_ifname_for_profile(profile, self._lan_mode, self._base_interface)
+            rx, tx = self._hal.net.counters(ifname)
+            previous = self._last.get(profile.name)
+            self._last[profile.name] = (now, rx, tx)
+            if previous is None:
+                result[profile.name] = ClassDemand(profile.name, down_bps=0, up_bps=0)
+                continue
+            then, prev_rx, prev_tx = previous
+            elapsed = now - then
+            if elapsed <= 0:
+                result[profile.name] = ClassDemand(profile.name, down_bps=0, up_bps=0)
+                continue
+            result[profile.name] = ClassDemand(
+                profile_name=profile.name,
+                down_bps=int(max(0, tx - prev_tx) * 8 / elapsed),
+                up_bps=int(max(0, rx - prev_rx) * 8 / elapsed),
+            )
+        log.debug(
+            "Sampled per-class demand from LAN counters",
+            extra={
+                "workflow": "demand_sample",
+                "state": "completed",
+                "intent": "give the allocator observed per-class load",
+                "lan_mode": self._lan_mode,
+                "demand_bps": {name: d.total_bps for name, d in result.items()},
+            },
+        )
+        return result

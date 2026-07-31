@@ -111,6 +111,7 @@ class MockNet(NetHal):
     def __init__(self) -> None:
         self.links = {"wlan0": True, "usb0": True, "ap0": True}
         self._counters: dict[str, tuple[int, int]] = {}
+        self._qdisc: dict[str, tuple[int, int]] = {}
 
     def interfaces(self) -> dict[str, bool]:
         return dict(self.links)
@@ -121,6 +122,13 @@ class MockNet(NetHal):
     def add_traffic(self, ifname: str, rx: int, tx: int) -> None:
         have_rx, have_tx = self._counters.get(ifname, (0, 0))
         self._counters[ifname] = (have_rx + rx, have_tx + tx)
+
+    def qdisc_stats(self, ifname: str) -> tuple[int, int]:
+        return self._qdisc.get(ifname, (0, 0))
+
+    def set_qdisc_stats(self, ifname: str, backlog_bytes: int, drops: int) -> None:
+        """Let a test say the kernel queue is backed up or dropping."""
+        self._qdisc[ifname] = (backlog_bytes, drops)
 
     def mac(self, ifname: str) -> str | None:
         return {"wlan0": "b8:27:eb:00:00:01", "usb0": "b8:27:eb:00:00:02"}.get(ifname)

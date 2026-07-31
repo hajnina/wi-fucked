@@ -108,6 +108,16 @@ class NetHal(Protocol):
     def counters(self, ifname: str) -> tuple[int, int]:
         """``(rx_bytes, tx_bytes)`` for an interface."""
 
+    def qdisc_stats(self, ifname: str) -> tuple[int, int]:
+        """``(backlog_bytes, dropped_packets)`` for the interface's root qdisc.
+
+        A read-only view of what the kernel queue is doing right now — used by
+        ``probe/`` to tell whether a link was actually saturated during the last
+        sample window (ADR-003: capacity is observed under load, not
+        configured). A nonzero backlog or a rising drop count means the link
+        was the bottleneck, so the throughput seen is a real capacity signal.
+        """
+
     def mac(self, ifname: str) -> str | None:
         """Permanent MAC where obtainable, else the current one."""
 
