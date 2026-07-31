@@ -1,3 +1,13 @@
+## v0.2.0 — 2026-07-31
+
+### feat
+- expose which kernel interface carries each service class (#5)
+- configurable address, admin auth, and first-run wizard (#4)
+
+### docs
+- changelog for v0.1.0 [skip ci]
+
+
 ## v0.1.0 — 2026-07-30
 
 ### feat
