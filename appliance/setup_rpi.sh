@@ -48,6 +48,7 @@ systemctl enable dnsmasq
 systemctl enable dirty-firstboot.service
 systemctl enable dirty-bootcount.service
 systemctl enable dirty.service
+systemctl enable dirty-watchdog.timer
 
 # NetworkManager must not manage the AP interface or fight us over the WAN
 # routes we install.
