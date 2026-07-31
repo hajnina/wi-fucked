@@ -165,6 +165,39 @@ schedule a recurring "check PR #N, fix what's red" prompt — but note it is
 session-only: the job dies with the session, so it does not substitute for
 watching the PR through to green yourself.
 
+### Don't leave a green PR open waiting for someone else's automation
+
+If you have merge rights and the PR is green and mergeable, **merge it**. Do not
+leave it open on the theory that some other automation — a bot, a scheduled
+Routine, another session — will pick it up. A stale open PR is not a passive
+state: every commit anyone else lands on `main` in the meantime is a chance for
+it to drift out of sync and need a rebase, or worse, to merge cleanly on stale
+assumptions and silently reintroduce something the other commit just fixed. A
+task description or handoff note may say "an automated Routine will merge this"
+— that is a claim about intent, not a guarantee about timing, and it is not a
+reason to sit on green CI. Verify, then merge. If something is genuinely not
+yours to merge (someone else's PR, a policy reason), say so explicitly rather
+than leaving it ambiguous who's landing it.
+
+### Auto-merge is real, but it doesn't replace watching your own PR
+
+[`.github/workflows/automerge.yml`](../../.github/workflows/automerge.yml)
+squash-merges a PR itself once its `CI` run reports success and `gh pr view`
+shows it `OPEN`, not a draft, `MERGEABLE`, and `mergeStateStatus: CLEAN`. This
+exists because this repo has no GitHub plan/branch-protection setup that makes
+native "enable auto-merge" do anything — this is the DIY equivalent, built from
+a `workflow_run` trigger and `gh`, not a paid feature. It deliberately refuses
+to merge anything whose head repository isn't this one, so a fork's CI success
+can never trigger a merge with this repo's token.
+
+This does not change the ownership rule above. It fires once, after the fact;
+if the mergeability check races GitHub's own async computation and comes back
+`UNKNOWN` for too long, or the branch needed an update first, it logs why and
+leaves the PR alone rather than looping. Watching your PR through to green and
+merging it yourself if auto-merge doesn't get there is still the job — this
+workflow is a backstop for the case where you can't, not a reason to stop
+checking.
+
 ### Before opening
 
 ```bash
