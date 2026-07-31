@@ -10,26 +10,35 @@ will all have removed it.
 **Never tear down** (ADR-008). There is no cleanup path here. No ``atexit``, no
 ``finally`` that flushes, no shutdown handler that removes qdiscs. Kernel state
 outlives the process deliberately, so that a control-plane crash degrades
-adaptivity rather than causing an outage.
+adaptivity rather than causing an outage. "Converged" therefore means *every
+desired rule is present*, never *the kernel holds exactly this and nothing else*
+— leftover state from a previous allocation is last-known-good, not garbage.
 
 `enforce` is the only module permitted to invoke ``tc``, ``nft``, or ``ip``.
 
-WS-D owns this module. Phase 0 ships the reconciliation skeleton and the desired
-state model; the command rendering is stubbed.
+WS-D owns this module.
 """
 
 from __future__ import annotations
 
+import json
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
 from dirty.allocator import Allocation
 from dirty.atomics.model import Atomic
+from dirty.lan import lan_ifname_for_profile
 from dirty.logging import get_logger
 from dirty.policy import DEFAULT_PROFILES, ServiceProfile
 
 log = get_logger("enforce")
+
+#: Name of the single nftables table this module owns. Everything it installs
+#: lives here so the whole ruleset can be replaced atomically without touching
+#: anyone else's rules.
+_TABLE = "dirty"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +83,12 @@ def render(
     """Turn an allocation into the kernel state that would implement it."""
     shaping: list[Shaping] = []
     routes: list[RouteRule] = []
-    marks: list[tuple[int, int]] = []
+
+    # LAN-origin marking is static: a profile's traffic is marked by the LAN
+    # interface it arrives on, whether or not a WAN atomic currently serves it.
+    # Dropping the mark when a profile has no active share would leave that
+    # traffic unclassified the moment an atomic appeared to steer it.
+    marks: list[tuple[int, int]] = [(p.vlan, p.vlan) for p in profiles]
 
     table = 100
     for share in allocation.shares:
@@ -85,7 +99,6 @@ def render(
         if profile is None:
             continue
         fwmark = profile.vlan
-        marks.append((profile.vlan, fwmark))
         routes.append(RouteRule(fwmark=fwmark, table=table, ifname=atomic.ifname))
 
     for atomic_id in {s.atomic_id for s in allocation.shares}:
@@ -151,23 +164,31 @@ class MockEnforcer(Enforcer):
 class LinuxEnforcer(Enforcer):
     """Programs tc/CAKE, nftables and policy routing.
 
-    WS-D owns the implementation. The reconciliation loop and the safety
-    properties are settled; what remains is rendering the commands and parsing
-    actual state back out.
-
     Note what is *absent*: any method that removes state. That is deliberate and
     load-bearing (ADR-008) — do not add one.
     """
 
-    def __init__(self, dry_run: bool = False):
+    def __init__(
+        self,
+        dry_run: bool = False,
+        lan_mode: str = "two_bss",
+        base_interface: str = "wlan0",
+        profiles: tuple[ServiceProfile, ...] = DEFAULT_PROFILES,
+    ):
         self._dry_run = dry_run
+        self._lan_mode = lan_mode
+        self._base_interface = base_interface
+        self._profiles = profiles
+        #: Only consulted in dry-run, where nothing is really installed and there
+        #: is no kernel to read back.
         self._actual: DesiredState | None = None
 
     def reconcile(self, desired: DesiredState) -> None:
         current = self.actual()
-        if current is not None and current.key() == desired.key():
+        if self._converged(current, desired):
             return
 
+        started = time.monotonic()
         log.info(
             "Reconciling kernel state",
             extra={
@@ -176,19 +197,69 @@ class LinuxEnforcer(Enforcer):
                 "intent": "apply the allocator's decision to the data plane",
                 "shaped_interfaces": len(desired.shaping),
                 "route_rules": len(desired.routes),
+                "marks": len(desired.marks),
                 "dry_run": self._dry_run,
             },
         )
 
         for shaping in desired.shaping:
             self._apply_cake(shaping)
+        self._apply_marks()
+        for route in desired.routes:
+            self._apply_route(route)
 
         self._actual = desired
+        log.info(
+            "Reconciled kernel state",
+            extra={
+                "workflow": "enforce_reconcile",
+                "state": "completed",
+                "intent": "apply the allocator's decision to the data plane",
+                "shaped_interfaces": len(desired.shaping),
+                "route_rules": len(desired.routes),
+                "marks": len(desired.marks),
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "dry_run": self._dry_run,
+            },
+        )
 
     def actual(self) -> DesiredState | None:
-        # WS-D: parse `tc qdisc show`, `nft list ruleset`, `ip rule show` back
-        # into a DesiredState so the diff is against reality rather than memory.
-        return self._actual
+        if self._dry_run:
+            return self._actual
+        return self._read_actual()
+
+    # -- convergence ----------------------------------------------------------
+
+    def _converged(self, current: DesiredState | None, desired: DesiredState) -> bool:
+        """Is every piece of ``desired`` already present in ``current``?
+
+        Subset, not equality: ADR-008 forbids tearing down, so the kernel may
+        legitimately hold leftover rules from a previous allocation. Requiring
+        exact equality would mean those leftovers block convergence forever and
+        we would re-program every tick.
+        """
+        if current is None:
+            return not (desired.shaping or desired.routes or desired.marks)
+
+        current_shaping = {s.ifname: s for s in current.shaping}
+        for want in desired.shaping:
+            have = current_shaping.get(want.ifname)
+            # CAKE renders the shaped rate to a rounded string (e.g. "95Mbit"),
+            # so an exact bit-for-bit comparison would rarely converge. Compare
+            # within a tolerance and re-shape only on a meaningful change.
+            if have is None or have.diffserv != want.diffserv:
+                return False
+            if not _close(have.down_bps, want.down_bps):
+                return False
+
+        current_routes = {(r.fwmark, r.table, r.ifname) for r in current.routes}
+        if any((r.fwmark, r.table, r.ifname) not in current_routes for r in desired.routes):
+            return False
+
+        current_marks = set(current.marks)
+        return all(m in current_marks for m in desired.marks)
+
+    # -- shaping --------------------------------------------------------------
 
     def _apply_cake(self, shaping: Shaping) -> None:
         argv = [
@@ -216,37 +287,399 @@ class LinuxEnforcer(Enforcer):
                 },
             )
             return
-        self._run(argv, shaping)
+        self._exec(
+            argv,
+            workflow="enforce_shaping",
+            intent="shape egress to measured capacity",
+            ifname=shaping.ifname,
+            target_bps=shaping.down_bps,
+        )
 
-    def _run(self, argv: list[str], shaping: Shaping) -> None:
+    # -- marking --------------------------------------------------------------
+
+    def _apply_marks(self) -> None:
+        """Install the static LAN-origin marking ruleset.
+
+        The mapping (which LAN interface carries which profile) does not change
+        per allocation, so the simplest correct thing is to declare the whole
+        ``dirty`` table every reconcile and let nft replace it atomically. The
+        leading ``table`` + ``flush table`` lines make the redeclaration
+        idempotent: the add creates the table if absent so the flush cannot
+        fail, the flush empties it, and the body re-populates it — all inside a
+        single ``nft -f -`` transaction, so there is no window where marking is
+        absent (nftables wiki, "Atomic rule replacement").
+        """
+        ruleset = self._nft_ruleset()
+        if self._dry_run:
+            log.info(
+                "Would apply nftables marking",
+                extra={
+                    "workflow": "enforce_marking",
+                    "state": "skipped",
+                    "intent": "mark LAN traffic by originating interface",
+                    "profiles": len(self._profiles),
+                    "reason": "dry run",
+                },
+            )
+            return
+        self._exec(
+            ["nft", "-f", "-"],
+            workflow="enforce_marking",
+            intent="mark LAN traffic by originating interface",
+            stdin=ruleset,
+            profiles=len(self._profiles),
+        )
+
+    def _nft_ruleset(self) -> str:
+        lines = [
+            f"table inet {_TABLE}",
+            f"flush table inet {_TABLE}",
+            f"table inet {_TABLE} {{",
+            "    chain mark {",
+            "        type filter hook prerouting priority mangle; policy accept;",
+        ]
+        for profile in self._profiles:
+            ifname = lan_ifname_for_profile(profile, self._lan_mode, self._base_interface)
+            lines.append(f'        iifname "{ifname}" meta mark set {profile.vlan}')
+        lines += ["    }", "}", ""]
+        return "\n".join(lines)
+
+    # -- routing --------------------------------------------------------------
+
+    def _apply_route(self, route: RouteRule) -> None:
+        # A deterministic priority makes the rule idempotent: re-adding it fails
+        # with "File exists" (which we tolerate) rather than piling up a
+        # duplicate every tick — exactly the persistent bug ADR-007 warns about.
+        pref = 10000 + route.fwmark
+        rule_argv = [
+            "ip",
+            "rule",
+            "add",
+            "fwmark",
+            str(route.fwmark),
+            "lookup",
+            str(route.table),
+            "priority",
+            str(pref),
+        ]
+        route_argv = [
+            "ip",
+            "route",
+            "replace",
+            "default",
+            "dev",
+            route.ifname,
+            "table",
+            str(route.table),
+        ]
+        if self._dry_run:
+            log.info(
+                "Would apply policy route",
+                extra={
+                    "workflow": "enforce_routing",
+                    "state": "skipped",
+                    "intent": "steer marked traffic to its atomic's table",
+                    "fwmark": route.fwmark,
+                    "table": route.table,
+                    "ifname": route.ifname,
+                    "reason": "dry run",
+                },
+            )
+            return
+        self._exec(
+            rule_argv,
+            workflow="enforce_routing",
+            intent="steer marked traffic to its atomic's table",
+            tolerate_exists=True,
+            fwmark=route.fwmark,
+            table=route.table,
+        )
+        self._exec(
+            route_argv,
+            workflow="enforce_routing",
+            intent="install the default route for this atomic's table",
+            fwmark=route.fwmark,
+            table=route.table,
+            ifname=route.ifname,
+        )
+
+    # -- reading actual state -------------------------------------------------
+
+    def _read_actual(self) -> DesiredState | None:
+        shaping = self._read_shaping()
+        marks = self._read_marks()
+        routes = self._read_routes()
+        if shaping is None and marks is None and routes is None:
+            # Could not read anything — treat as "unknown", forcing reconcile to
+            # apply. Applying is idempotent, so a failed read never hurts.
+            return None
+        return DesiredState(
+            shaping=tuple(sorted(shaping or (), key=lambda s: s.ifname)),
+            routes=tuple(sorted(routes or (), key=lambda r: (r.fwmark, r.ifname))),
+            marks=tuple(sorted(marks or ())),
+        )
+
+    def _read_shaping(self) -> list[Shaping] | None:
+        out = self._exec(
+            ["tc", "-j", "qdisc", "show"],
+            workflow="enforce_readback",
+            intent="read installed qdiscs to diff against desired",
+        )
+        if out is None:
+            return None
         try:
-            done = subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False)
+            entries = json.loads(out)
+        except json.JSONDecodeError as exc:
+            _log_parse_failure("tc", exc)
+            return None
+        result: list[Shaping] = []
+        for qdisc in entries:
+            if qdisc.get("kind") != "cake":
+                continue
+            dev = qdisc.get("dev")
+            options = qdisc.get("options") or {}
+            down_bps = _parse_rate(options.get("bandwidth"))
+            if not dev or down_bps is None:
+                continue
+            result.append(
+                Shaping(
+                    ifname=dev,
+                    down_bps=down_bps,
+                    up_bps=0,  # CAKE shapes a single egress rate; up is not observable.
+                    diffserv=str(options.get("diffserv", "diffserv4")),
+                )
+            )
+        return result
+
+    def _read_marks(self) -> list[tuple[int, int]] | None:
+        out = self._exec(
+            ["nft", "-j", "list", "ruleset"],
+            workflow="enforce_readback",
+            intent="read installed nft marking rules to diff against desired",
+        )
+        if out is None:
+            return None
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError as exc:
+            _log_parse_failure("nft", exc)
+            return None
+        marks: list[tuple[int, int]] = []
+        for item in data.get("nftables", []):
+            rule = item.get("rule")
+            if not rule or rule.get("table") != _TABLE:
+                continue
+            iifname: str | None = None
+            markval: int | None = None
+            for expr in rule.get("expr", []):
+                match = expr.get("match")
+                if match and _meta_key(match.get("left")) == "iifname":
+                    iifname = match.get("right")
+                mangle = expr.get("mangle")
+                if mangle and _meta_key(mangle.get("key")) == "mark":
+                    markval = mangle.get("value")
+            if iifname is None or markval is None:
+                continue
+            try:
+                vlan = int(str(iifname).rsplit(".", 1)[1])
+                fwmark = int(markval)
+            except (ValueError, IndexError):
+                continue
+            marks.append((vlan, fwmark))
+        return marks
+
+    def _read_routes(self) -> list[RouteRule] | None:
+        out = self._exec(
+            ["ip", "-j", "rule", "show"],
+            workflow="enforce_readback",
+            intent="read installed ip rules to diff against desired",
+        )
+        if out is None:
+            return None
+        try:
+            rules = json.loads(out)
+        except json.JSONDecodeError as exc:
+            _log_parse_failure("ip rule", exc)
+            return None
+        result: list[RouteRule] = []
+        for rule in rules:
+            fwmark = _parse_int(rule.get("fwmark"))
+            table = _parse_int(rule.get("table"))
+            if fwmark is None or table is None:
+                continue
+            dev = self._read_table_default_dev(table)
+            if dev is None:
+                continue
+            result.append(RouteRule(fwmark=fwmark, table=table, ifname=dev))
+        return result
+
+    def _read_table_default_dev(self, table: int) -> str | None:
+        out = self._exec(
+            ["ip", "-j", "route", "show", "table", str(table)],
+            workflow="enforce_readback",
+            intent="read a routing table's default route to diff against desired",
+        )
+        if out is None:
+            return None
+        try:
+            routes = json.loads(out)
+        except json.JSONDecodeError as exc:
+            _log_parse_failure("ip route", exc)
+            return None
+        for route in routes:
+            if route.get("dst") == "default":
+                return route.get("dev")
+        return None
+
+    # -- command runner -------------------------------------------------------
+
+    def _exec(
+        self,
+        argv: list[str],
+        *,
+        workflow: str,
+        intent: str,
+        stdin: str | None = None,
+        tolerate_exists: bool = False,
+        **ctx: object,
+    ) -> str | None:
+        """Run a command, returning stdout or None. Never raises.
+
+        Failures are logged and swallowed — a control-plane hiccup keeps the
+        last-known-good kernel state rather than crashing the daemon (ADR-008).
+        """
+        try:
+            done = subprocess.run(
+                argv, input=stdin, capture_output=True, text=True, timeout=10, check=False
+            )
         except (OSError, subprocess.SubprocessError) as exc:
             log.error(
-                "Failed to invoke tc; keeping previous shaping",
+                "Command failed to spawn; keeping previous kernel state",
                 extra={
-                    "workflow": "enforce_shaping",
+                    "workflow": workflow,
                     "state": "failed",
-                    "intent": "shape egress to measured capacity",
-                    "ifname": shaping.ifname,
-                    "target_bps": shaping.down_bps,
-                    "reason": "could not spawn tc",
+                    "intent": intent,
+                    "argv": argv,
+                    "reason": "could not spawn process",
                     "error": str(exc),
+                    **ctx,
                 },
                 exc_info=True,
             )
-            return
+            return None
 
         if done.returncode != 0:
-            log.error(
-                "tc rejected the qdisc; keeping previous shaping",
+            stderr = (done.stderr or "").strip()
+            if tolerate_exists and "exist" in stderr.lower():
+                # The rule is already installed — the idempotent happy path.
+                log.debug(
+                    "Rule already present; nothing to do",
+                    extra={
+                        "workflow": workflow,
+                        "state": "skipped",
+                        "intent": intent,
+                        "argv": argv,
+                        "reason": "rule already installed",
+                        **ctx,
+                    },
+                )
+                return None
+            log.warning(
+                "Command returned non-zero; keeping previous kernel state",
                 extra={
-                    "workflow": "enforce_shaping",
+                    "workflow": workflow,
                     "state": "failed",
-                    "intent": "shape egress to measured capacity",
-                    "ifname": shaping.ifname,
-                    "target_bps": shaping.down_bps,
+                    "intent": intent,
+                    "argv": argv,
                     "returncode": done.returncode,
-                    "reason": (done.stderr or "").strip()[:200],
+                    "reason": stderr[:200],
+                    **ctx,
                 },
             )
+            return None
+        return done.stdout
+
+
+def _meta_key(node: object) -> str | None:
+    """Extract ``meta.key`` from an nft JSON expression operand, if present."""
+    if isinstance(node, dict):
+        meta = node.get("meta")
+        if isinstance(meta, dict):
+            return meta.get("key")
+    return None
+
+
+def _parse_int(value: object) -> int | None:
+    """Parse an int that iproute2 may render as a decimal or ``0x`` hex string."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            return int(text, 16) if text.lower().startswith("0x") else int(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_rate(value: object) -> int | None:
+    """Parse a CAKE bandwidth field into bits per second.
+
+    ``tc -j`` renders the shaped rate as a unit-suffixed string ("95Mbit") and
+    reports an unset shaper as "unlimited". Returns None when the rate is
+    unknown, which forces a re-apply rather than a false match.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip().lower()
+    if not text or text == "unlimited":
+        return None
+    units = {
+        "tbit": 1_000_000_000_000,
+        "gbit": 1_000_000_000,
+        "mbit": 1_000_000,
+        "kbit": 1_000,
+        "gibit": 1024**3,
+        "mibit": 1024**2,
+        "kibit": 1024,
+        "bit": 1,
+    }
+    for suffix in sorted(units, key=len, reverse=True):
+        if text.endswith(suffix):
+            number = text[: -len(suffix)].strip()
+            try:
+                return int(float(number) * units[suffix])
+            except ValueError:
+                return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def _close(a: int, b: int, tolerance: float = 0.02) -> bool:
+    """Whether two bandwidths are equal within CAKE's rendering resolution."""
+    if a == b:
+        return True
+    ceiling = max(abs(a), abs(b))
+    return abs(a - b) <= ceiling * tolerance
+
+
+def _log_parse_failure(tool: str, exc: Exception) -> None:
+    log.warning(
+        "Could not parse kernel state; assuming divergence",
+        extra={
+            "workflow": "enforce_readback",
+            "state": "failed",
+            "intent": "read actual kernel state to diff against desired",
+            "tool": tool,
+            "reason": "malformed JSON output",
+            "error": str(exc),
+        },
+    )
