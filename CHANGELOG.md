@@ -1,3 +1,12 @@
+## v1.1.0 — 2026-07-31
+
+### feat
+- add a DIY auto-merge workflow, and stop treating it as a reason to wait (#12)
+
+### docs
+- changelog for v1.0.0 [skip ci]
+
+
 ## v1.0.0 — 2026-07-31
 
 ### docs
