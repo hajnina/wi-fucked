@@ -6,11 +6,14 @@ to do, the rule wins.
 
 ## Git
 
-**Never run git commands unless the user explicitly asks, or to own an open
-pull request.** Once a pull request exists, its author is responsible for it:
+**Once work is committed and pushed to a branch, open a pull request for it
+automatically** — do not wait to be asked. Its author is responsible for it:
 make one CI-and-review check five minutes after opening it or pushing an update,
 then make one check every 30 minutes until it is merged or closed. Address
-actionable feedback and failures. Git is otherwise off-limits by default.
+actionable feedback and failures. **Merge automatically once CI is green** and
+there is no unresolved reviewer feedback blocking it; do not leave a passing PR
+idle waiting for a human to click merge. Everything else about git remains
+off-limits unless the user explicitly asks.
 
 ## Standard Operating Procedures — read these
 
