@@ -102,6 +102,17 @@ class MockUsb(UsbHal):
                 description="Martin's Phone",
             )
         ]
+        #: A real USB Ethernet dongle, not present by default — scenario tests
+        #: opt in to it to exercise the tether/adapter distinction.
+        self.spare_ethernet_adapter = UsbDevice(
+            vendor="0bda",
+            product="8152",
+            serial="MOCKDONGLE001",
+            port_path="1-2",
+            ifname="usb1",
+            is_tether=False,
+            description="USB 3.0 Ethernet",
+        )
 
     def devices(self) -> list[UsbDevice]:
         return list(self.attached)
