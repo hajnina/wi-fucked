@@ -1,0 +1,92 @@
+# Auto-merge — the DIY equivalent of GitHub's native auto-merge.
+#
+# Native auto-merge only does anything useful once branch protection defines
+# required status checks; without that (or on a plan/visibility combination
+# that doesn't offer it) "enable auto-merge" just sits there. This does the
+# same job explicitly: when the CI workflow finishes successfully, find the
+# PR it ran for and squash-merge it if it's actually clean.
+#
+# Runs in the base repo's context (workflow_run, not pull_request), so a
+# fork's CI success must never merge anything — see the fork guard below.
+# SOP-005 governs the policy this encodes: don't leave a green PR open.
+
+name: Auto-merge
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Find the PR this run belongs to
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REPO_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+        run: |
+          set -euo pipefail
+
+          # Never auto-merge a fork's PR: workflow_run executes with this
+          # repo's token regardless of whose commit triggered it, so this is
+          # the one check that must not be skipped or weakened.
+          if [ "${HEAD_REPO_OWNER}" != "${{ github.repository_owner }}" ]; then
+            echo "Head repo (${HEAD_REPO_OWNER}) is not this repo; refusing to auto-merge a fork's PR."
+            echo "number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # gh's built-in --jq takes one filter string, not a separate --arg —
+          # HEAD_SHA is a git commit SHA (fixed hex charset), safe to inline.
+          number="$(gh pr list --repo "${{ github.repository }}" --head "${HEAD_BRANCH}" \
+            --state open --json number,headRefOid \
+            --jq ".[] | select(.headRefOid == \"${HEAD_SHA}\") | .number" | head -n1)"
+          if [ -z "${number}" ]; then
+            echo "No open PR matches this run's head branch at this exact commit; nothing to merge."
+            echo "number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "number=${number}" >> "$GITHUB_OUTPUT"
+
+      - name: Merge if clean
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+
+          # GitHub computes mergeability asynchronously, so right after CI
+          # finishes it can still read UNKNOWN for a few seconds. Poll briefly
+          # rather than treating that as a real conflict and giving up.
+          state=""
+          for _ in 1 2 3 4 5; do
+            state="$(gh pr view "${NUMBER}" --repo "${{ github.repository }}" \
+              --json state,isDraft,mergeable,mergeStateStatus)"
+            [ "$(jq -r '.mergeable' <<<"${state}")" != "UNKNOWN" ] && break
+            sleep 10
+          done
+          echo "${state}"
+
+          is_open="$(jq -r '.state == "OPEN"' <<<"${state}")"
+          not_draft="$(jq -r '.isDraft == false' <<<"${state}")"
+          mergeable="$(jq -r '.mergeable == "MERGEABLE"' <<<"${state}")"
+          clean="$(jq -r '.mergeStateStatus == "CLEAN"' <<<"${state}")"
+
+          if [ "${is_open}" = "true" ] && [ "${not_draft}" = "true" ] \
+             && [ "${mergeable}" = "true" ] && [ "${clean}" = "true" ]; then
+            gh pr merge "${NUMBER}" --repo "${{ github.repository }}" --squash --delete-branch
+          else
+            echo "PR #${NUMBER} is not in a clean mergeable state" \
+                 "(open=${is_open} not_draft=${not_draft} mergeable=${mergeable} clean=${clean});" \
+                 "leaving it for manual review."
+          fi
