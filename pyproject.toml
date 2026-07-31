@@ -32,8 +32,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "appliance/tests/**" = ["S101"]  # asserts are the point of a test
+# Asserts are the point of a test; the credentials are fixtures, not secrets.
+"fabric/tests/**" = ["S101", "S105", "S106"]
 
 [tool.pytest.ini_options]
-testpaths = ["appliance/tests"]
-pythonpath = ["appliance/src"]
+testpaths = ["appliance/tests", "fabric/tests"]
+pythonpath = ["appliance/src", "fabric/src"]
 filterwarnings = ["error::DeprecationWarning:dirty.*"]

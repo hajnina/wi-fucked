@@ -64,13 +64,13 @@ jobs:
 
       - name: Ruff
         run: |
-          ruff check appliance/src fabric/src appliance/tests
-          ruff format --check appliance/src fabric/src appliance/tests
+          ruff check appliance/src fabric/src appliance/tests fabric/tests
+          ruff format --check appliance/src fabric/src appliance/tests fabric/tests
 
       - name: Shellcheck
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck appliance/*.sh scripts/*.sh appliance/stage-custom/opt/dirty/*.sh
+          shellcheck appliance/*.sh scripts/*.sh appliance/stage-custom/opt/dirty/*.sh fabric/*.sh
 
       - name: Actionlint
         uses: reviewdog/action-actionlint@v1

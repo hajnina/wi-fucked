@@ -28,8 +28,8 @@ python3 appliance/tests/verify_no_external_assets.py appliance || fail "airgap"
 
 if command -v ruff > /dev/null; then
     step "Ruff"
-    ruff check appliance/src fabric/src appliance/tests || fail "ruff check"
-    ruff format --check appliance/src fabric/src appliance/tests || fail "ruff format"
+    ruff check appliance/src fabric/src appliance/tests fabric/tests || fail "ruff check"
+    ruff format --check appliance/src fabric/src appliance/tests fabric/tests || fail "ruff format"
 else
     echo "ruff not installed; skipping (pip install -r appliance/requirements-dev.txt)"
 fi
@@ -37,7 +37,7 @@ fi
 if command -v shellcheck > /dev/null; then
     step "Shellcheck"
     shellcheck appliance/*.sh scripts/*.sh appliance/stage-custom/opt/dirty/*.sh \
-        run_all_tests.sh || fail "shellcheck"
+        fabric/*.sh run_all_tests.sh || fail "shellcheck"
 else
     echo "shellcheck not installed; skipping"
 fi
@@ -45,7 +45,7 @@ fi
 # --- tests ------------------------------------------------------------------
 
 step "Unit tests"
-python3 -m pytest appliance/tests/ -q --ignore=appliance/tests/scenarios || fail "unit tests"
+python3 -m pytest appliance/tests/ fabric/tests/ -q --ignore=appliance/tests/scenarios || fail "unit tests"
 
 # The ones that matter most: control behaviour over time, plus the two
 # invariants — the AP never drops, and BACKUP carries zero bytes until critical
