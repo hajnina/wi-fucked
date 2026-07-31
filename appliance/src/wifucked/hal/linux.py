@@ -252,14 +252,75 @@ def _read(path: Path) -> str | None:
         return None
 
 
+#: RNDIS is what Android/Windows Mobile tethering presents: a vendor-specific
+#: "Wireless Controller" interface class rather than a CDC Ethernet subclass.
+#: This is how the kernel's own rndis_host driver decides what to bind to.
+_RNDIS_CLASS = "e0"
+_RNDIS_SUBCLASS = "01"
+_RNDIS_PROTOCOL = "03"
+
+#: CDC control-interface subclasses that mean "this is an Ethernet adapter",
+#: per the USB CDC spec: Ethernet Networking Control Model (ECM), Ethernet
+#: Emulation Model (EEM), Network Control Model (NCM). iPhone tethering also
+#: uses NCM, which is why NCM alone cannot fully distinguish phone from
+#: dongle — see the fallback note below.
+_CDC_CLASS = "02"
+_CDC_ETHERNET_SUBCLASSES = {"06", "0c", "0d"}
+
+
+def _classify_interface(iface_dir: Path) -> bool | None:
+    """Best-effort tether-vs-adapter call from the USB interface descriptor.
+
+    Returns True (tether), False (Ethernet adapter), or None when the
+    descriptor doesn't match a known pattern, in which case the caller must
+    fall back rather than guess silently.
+    """
+    usb_class = _read(iface_dir / "bInterfaceClass")
+    subclass = _read(iface_dir / "bInterfaceSubClass")
+    protocol = _read(iface_dir / "bInterfaceProtocol")
+    if usb_class == _RNDIS_CLASS and subclass == _RNDIS_SUBCLASS and protocol == _RNDIS_PROTOCOL:
+        return True
+    if usb_class == _CDC_CLASS and subclass in _CDC_ETHERNET_SUBCLASSES:
+        return False
+    return None
+
+
 def _net_interface_for(usb_entry: Path) -> tuple[str | None, bool]:
-    """Find the network interface a USB device exposes, if any."""
+    """Find the network interface a USB device exposes, if any, and classify it.
+
+    Classification reads the USB interface descriptor (class/subclass/protocol)
+    rather than assuming every USB netdev is a phone. RNDIS — what Android and
+    Windows Mobile tethering present — is a distinct, vendor-specific interface
+    class from CDC Ethernet (ECM/EEM/NCM), which is what USB Ethernet dongles
+    use. iPhone tethering also uses NCM, so a bare NCM interface is genuinely
+    ambiguous between "iPhone tether" and "USB Ethernet dongle"; that case (and
+    any interface class this function has not seen before) falls back to
+    treating it as a tether, since a false "backup, ask before use" costs
+    nothing while silently treating a phone as a free wired uplink would spend
+    someone's data plan.
+    """
     for candidate in usb_entry.rglob("net/*"):
         if candidate.is_dir():
-            # RNDIS/NCM/ECM all surface as a plain netdev; treating any USB-attached
-            # netdev as a potential tether is deliberate — we cannot tell a phone
-            # from a dongle here, and the user classifies it anyway.
-            return candidate.name, True
+            # sysfs lays this out as <interface-dir>/net/<ifname>, so the
+            # descriptor files live two levels up from the netdev, not one.
+            iface_dir = candidate.parent.parent
+            classified = _classify_interface(iface_dir)
+            if classified is None:
+                log.info(
+                    "USB network interface has an unrecognised descriptor; defaulting to tether",
+                    extra={
+                        "workflow": "usb_classification",
+                        "state": "completed",
+                        "intent": "distinguish phone tethering from a USB Ethernet adapter",
+                        "ifname": candidate.name,
+                        "usb_class": _read(iface_dir / "bInterfaceClass"),
+                        "usb_subclass": _read(iface_dir / "bInterfaceSubClass"),
+                        "reason": "no known RNDIS/CDC-Ethernet pattern matched; "
+                        "defaulting to the safer (metered) assumption",
+                    },
+                )
+                classified = True
+            return candidate.name, classified
     return None, False
 
 
