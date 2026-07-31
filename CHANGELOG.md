@@ -1,3 +1,12 @@
+## v0.4.0 — 2026-07-31
+
+### feat
+- wire real hardware implementations and attach to the fabric (#10)
+
+### docs
+- changelog for v0.3.1 [skip ci]
+
+
 ## v0.3.1 — 2026-07-31
 
 ### docs
