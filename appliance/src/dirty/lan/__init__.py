@@ -116,6 +116,33 @@ vlan_id={CRITICAL.vlan}
     )
 
 
+def lan_ifname_for_profile(
+    profile: ServiceProfile, lan_mode: str, base_interface: str = "wlan0"
+) -> str:
+    """The kernel interface a profile's LAN traffic actually arrives on.
+
+    Mirrors the layout ``hostapd_config()`` builds, so the two never drift
+    apart. Both modes set a static per-BSS ``vlan_id`` with no ``vlan_file``,
+    and hostapd statically maps that to a ``<bss-iface>.<vlan-id>``
+    subinterface (confirmed against hostapd's own VLAN documentation —
+    https://wireless.wiki.kernel.org/en/users/documentation/hostapd,
+    https://gist.github.com/hkwi/8121425). The two modes differ only in which
+    BSS carries which profile: ``two_bss`` gives each profile its own BSS
+    (``wlan0`` / ``wlan0_1``); ``two_psk`` puts both on the single base BSS,
+    distinguished by which PSK the client used rather than which radio BSS.
+    Either way the VLAN suffix always matches ``profile.vlan``.
+
+    Consulted by ``enforce/`` (to mark WAN-bound traffic by LAN origin) and
+    ``demand/`` (to read per-class byte counters) so this mapping is defined
+    once, here, rather than reconstructed independently in each caller.
+    """
+    if lan_mode == "two_psk" or profile is BEST_EFFORT:
+        bss = base_interface
+    else:
+        bss = f"{base_interface}_1"
+    return f"{bss}.{profile.vlan}"
+
+
 def wpa_psk_file(identity: LanIdentity) -> str:
     """Per-PSK VLAN assignment for the two-PSK fallback."""
     return (
