@@ -1,3 +1,15 @@
+## v0.3.0 — 2026-07-31
+
+### feat
+- real WireGuard tunnel and fabric peer registration (#9)
+- apply real nftables marking, policy routing and readback (#8)
+- real saturation, active RTT, and per-class demand (#7)
+- add rollback watchdog (#6)
+
+### docs
+- changelog for v0.2.1 [skip ci]
+
+
 ## v0.2.1 — 2026-07-31
 
 ### docs
