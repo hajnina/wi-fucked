@@ -89,5 +89,23 @@ print(f"dirty-firstboot: generated identity for {identity.besteffort_ssid}")
 PY
 
 chmod 600 /etc/hostapd/hostapd.conf
+
+# The WireGuard identity that attaches this device to the fabric. Generated
+# on-device, once, and never baked into an image or a release artifact — the
+# private key must never leave this Pi (SOP-008, "Never ship a secret"; CI greps
+# built packages for key-shaped content). Guarded independently of the identity
+# sentinel so a key is never silently regenerated (which would invalidate the
+# device's fabric registration) even if this block is reached again.
+if [[ ! -f /etc/wireguard/dirty-privatekey ]]; then
+    echo "dirty-firstboot: generating WireGuard keypair"
+    install -d -m 700 /etc/wireguard
+    ( umask 077; wg genkey | tee /etc/wireguard/dirty-privatekey | wg pubkey \
+        > /etc/wireguard/dirty-publickey )
+    chmod 600 /etc/wireguard/dirty-privatekey
+    echo "dirty-firstboot: WireGuard keypair generated (private key stays on-device)"
+else
+    echo "dirty-firstboot: WireGuard keypair already present; leaving it"
+fi
+
 touch "${SENTINEL}"
 echo "dirty-firstboot: identity is now immutable"
