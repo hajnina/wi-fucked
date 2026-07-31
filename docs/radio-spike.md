@@ -7,6 +7,10 @@ executed, findings replace the brief and amend
 
 ---
 
+See also [`active-tests.md`](active-tests.md): the code for SHARED-profile
+CSA is already live in the real control loop and does not wait for this spike
+to run. That file tracks it as unconfirmed until someone watches it work.
+
 ## Why this is task zero
 
 Two accepted ADRs rest on driver behaviour that **nobody has measured on this

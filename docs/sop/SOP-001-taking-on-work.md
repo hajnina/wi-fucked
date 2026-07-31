@@ -69,6 +69,11 @@ Ask before proceeding — do not guess — when:
 - The task requires hardware behaviour nobody has verified. Check
   [`../radio-spike.md`](../radio-spike.md) findings first; if the answer isn't
   there, the honest move is a spike, not an assumption.
+- You are about to build on top of something listed in
+  [`../active-tests.md`](../active-tests.md) as `UNCONFIRMED`. That file tracks
+  code that is live and running against real hardware despite nobody having
+  watched the result — ask the user what they've actually observed before
+  treating it as a known-working foundation.
 - The requirement is ambiguous in a way that changes the design. Two plausible
   readings that produce the same code is not ambiguity worth blocking on. Two that
   produce different architectures is.

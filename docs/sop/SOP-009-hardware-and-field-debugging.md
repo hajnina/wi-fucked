@@ -88,6 +88,13 @@ If you learn something new about the radio, **add it to the spike findings in th
 same session.** That document is the team's shared model of the hardware, and it
 is only worth anything if it stays accurate.
 
+**Also check [`../active-tests.md`](../active-tests.md).** Some radio behaviour
+(SHARED-profile CSA, notably) is live in the real control loop today even though
+nobody has confirmed it works — the spike hasn't run, but the code doesn't wait
+for it. If you're debugging something in that file's entries, you may be the
+first person to actually observe the result: update the entry with what
+happened before you move on, whether it worked or not.
+
 ## Reproducing field conditions on a desk
 
 Most control-loop bugs are reproducible without a van, and reproducing beats
