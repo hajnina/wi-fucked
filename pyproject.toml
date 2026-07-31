@@ -31,8 +31,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"appliance/tests/**" = ["S101"]  # asserts are the point of a test
 # Asserts are the point of a test; the credentials are fixtures, not secrets.
+"appliance/tests/**" = ["S101", "S105", "S106"]
 "fabric/tests/**" = ["S101", "S105", "S106"]
 
 [tool.pytest.ini_options]
