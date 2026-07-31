@@ -4,32 +4,6 @@ Handover items that need a human. Delete each entry once it's done.
 
 ---
 
-## Apply the CI workflow rename by hand — **blocks nothing, but keep CI in sync**
-
-The Dirty -> Wi-Fucked brand rename (commit `a0fdaa4` on
-`claude/brand-rename-dirty-wifucked-8hl4m5`) touched every file in the repo
-except `.github/workflows/ci.yml`, `.github/workflows/main_release.yml`, and
-`.github/workflows/reusable_image_pipeline.yml`. The push was rejected:
-
-```
-refusing to allow an OAuth App to create or update workflow
-`.github/workflows/ci.yml` without `workflow` scope
-```
-
-That's a token-scope restriction on the session that did the rename, not a
-repo problem — those three files still say `dirty` in a few places
-(job/step names, image tags, the `DIRTY_*` build args) and need the same
-substitution as everything else.
-
-The full diff, plus the complete post-rename contents of all three files,
-are in
-[`docs/handover-dirty-to-wifucked-ci-workflows.zip`](docs/handover-dirty-to-wifucked-ci-workflows.zip).
-Apply with `git apply dirty-to-wifucked-workflows.patch` from repo root (on
-top of the rename commit), or copy the files in directly if it doesn't
-apply cleanly. Delete the zip and this entry once it's landed.
-
----
-
 ## 3. Run the radio capability spike — **blocks the LAN design**
 
 **This is task zero of Phase 0.** See [`docs/radio-spike.md`](docs/radio-spike.md)
