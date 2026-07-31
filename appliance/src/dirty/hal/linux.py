@@ -11,6 +11,7 @@ See docs/radio-spike.md — do not guess here.
 from __future__ import annotations
 
 import contextlib
+import re
 import subprocess
 from pathlib import Path
 from typing import ClassVar
@@ -147,6 +148,31 @@ class LinuxWifi(WifiHal):
         )
 
 
+#: ``tc -s`` prints a backlog figure with an optional SI-ish suffix, e.g.
+#: ``backlog 0b 0p`` or ``backlog 15Kb 10p``. Read the root qdisc's line only —
+#: it is the first block ``tc`` emits, before any class children.
+_BACKLOG_RE = re.compile(r"backlog\s+(\d+)([KMG]?)b")
+_DROPPED_RE = re.compile(r"dropped\s+(\d+)")
+_SI_MULTIPLIER = {"": 1, "K": 1000, "M": 1_000_000, "G": 1_000_000_000}
+
+
+def _parse_qdisc_stats(out: str) -> tuple[int, int]:
+    """Extract ``(backlog_bytes, dropped_packets)`` from ``tc -s qdisc`` output.
+
+    Takes the first match of each — the root qdisc is emitted first, and its
+    aggregate counters are the ones that describe the interface as a whole.
+    """
+    backlog_bytes = 0
+    backlog_m = _BACKLOG_RE.search(out)
+    if backlog_m:
+        backlog_bytes = int(backlog_m.group(1)) * _SI_MULTIPLIER[backlog_m.group(2)]
+    drops = 0
+    drops_m = _DROPPED_RE.search(out)
+    if drops_m:
+        drops = int(drops_m.group(1))
+    return backlog_bytes, drops
+
+
 def _freq_to_channel(mhz: int) -> int:
     if 2412 <= mhz <= 2472:
         return (mhz - 2412) // 5 + 1
@@ -254,6 +280,21 @@ class LinuxNet(NetHal):
             return int(rx), int(tx)
         except ValueError:
             return 0, 0
+
+    def qdisc_stats(self, ifname: str) -> tuple[int, int]:
+        """Root-qdisc backlog and drop count from ``tc -s qdisc show``.
+
+        This shells out to ``tc``, which SOP-002 reserves for ``enforce/``. That
+        rule is about *mutating* kernel state — installing and reconciling
+        qdiscs/rules — which must flow through one module. This is a read-only
+        query of a statistic, in the same family as the ``iw``/``ethtool``/sysfs
+        reads this HAL already performs, so it belongs here rather than being a
+        stray ``subprocess`` call inside ``probe/``.
+        """
+        out = _run(["tc", "-s", "qdisc", "show", "dev", ifname])
+        if not out:
+            return 0, 0
+        return _parse_qdisc_stats(out)
 
     def mac(self, ifname: str) -> str | None:
         # Prefer the permanent address: a randomised MAC is not stable identity.
