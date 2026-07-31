@@ -191,3 +191,117 @@ def test_bind_to_leaves_previous_path_on_route_failure(monkeypatch):
     tun = WireGuardTunnel(fabric_min="0.1.0")
     tun.bind_to("wifi-hotel", "wlan0")  # first move succeeds? no — replace fails
     assert tun.status().via_atomic_id is None
+
+
+# --- attach() — registering with a fabric and bringing wg0 up ---------------
+
+
+def _install_http(monkeypatch, responses: dict[str, tuple[dict | None, int | None]]) -> list[str]:
+    """Fake `_http_json`: maps a URL suffix ("/health", "/register") to a
+    canned (body, status). Records every URL called."""
+    calls: list[str] = []
+
+    def fake(method, url, **kwargs):
+        calls.append(url)
+        for suffix, result in responses.items():
+            if url.endswith(suffix):
+                return result
+        return None, None
+
+    monkeypatch.setattr(tunnel_mod, "_http_json", fake)
+    return calls
+
+
+def test_attach_fails_closed_when_fabric_unreachable(monkeypatch, tmp_path):
+    _install_http(monkeypatch, {})  # every call returns (None, None)
+    tun = WireGuardTunnel(fabric_min="0.1.0")
+    assert tun.attach("https://fabric.invalid") is False
+    assert tun.status().server is None
+
+
+def test_attach_reports_incompatible_without_registering(monkeypatch, tmp_path):
+    calls = _install_http(
+        monkeypatch,
+        {"/health": ({"ok": True, "version": "0.0.1", "address": "fabric:51820"}, 200)},
+    )
+    tun = WireGuardTunnel(fabric_min="0.1.0")  # fabric is older than our floor
+    assert tun.attach("https://fabric.invalid") is False
+    assert not any(u.endswith("/register") for u in calls), "must not register with an old fabric"
+    status = tun.status()
+    assert status.state.value == "incompatible"
+
+
+def test_attach_succeeds_and_configures_the_interface(monkeypatch, tmp_path):
+    _install_http(
+        monkeypatch,
+        {
+            "/health": ({"ok": True, "version": "1.0.0", "address": "fabric:51820"}, 200),
+            "/register": (
+                {
+                    "assigned_address": "10.99.0.2/32",
+                    "fabric_public_key": "FABRICKEY=",
+                    "endpoint": "fabric.example.com:51820",
+                    "tunnel_pool": "10.99.0.0/24",
+                },
+                200,
+            ),
+        },
+    )
+    pub_key_file = tmp_path / "dirty-publickey"
+    pub_key_file.write_text("DEVICEKEY=\n")
+    priv_key_file = tmp_path / "dirty-privatekey"
+
+    responder = _Responder(
+        {
+            ("ip", "link", "add"): "",
+            ("wg", "set"): "",
+            ("ip", "address", "add"): "",
+            ("ip", "link", "set"): "",
+        }
+    )
+    _install(monkeypatch, responder)
+
+    tun = WireGuardTunnel(fabric_min="0.1.0")
+    ok = tun.attach(
+        "https://fabric.invalid",
+        username="admin",
+        password="hunter2",
+        version="0.2.0",
+        private_key_path=priv_key_file,
+        public_key_path=pub_key_file,
+    )
+    assert ok is True
+
+    wg_set_call = next(c for c in responder.calls if c[:2] == ["wg", "set"])
+    assert "FABRICKEY=" in wg_set_call
+    assert "fabric.example.com:51820" in wg_set_call
+    assert "10.99.0.0/24" in wg_set_call
+    assert str(priv_key_file) in wg_set_call
+
+    status = tun.status()
+    assert status.server is not None
+    assert status.server.public_key == "FABRICKEY="
+
+
+def test_attach_fails_when_device_key_missing(monkeypatch, tmp_path):
+    _install_http(
+        monkeypatch,
+        {"/health": ({"ok": True, "version": "1.0.0", "address": "fabric:51820"}, 200)},
+    )
+    missing = tmp_path / "does-not-exist"
+    tun = WireGuardTunnel(fabric_min="0.1.0")
+    assert tun.attach("https://fabric.invalid", public_key_path=missing) is False
+
+
+def test_attach_fails_on_register_error_response(monkeypatch, tmp_path):
+    _install_http(
+        monkeypatch,
+        {
+            "/health": ({"ok": True, "version": "1.0.0", "address": "fabric:51820"}, 200),
+            "/register": ({"error": "tunnel address pool exhausted"}, 503),
+        },
+    )
+    pub_key_file = tmp_path / "dirty-publickey"
+    pub_key_file.write_text("DEVICEKEY=\n")
+    tun = WireGuardTunnel(fabric_min="0.1.0")
+    assert tun.attach("https://fabric.invalid", public_key_path=pub_key_file) is False

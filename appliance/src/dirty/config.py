@@ -39,6 +39,12 @@ class LanConfig:
 class FabricConfig:
     servers: list[str] = field(default_factory=list)
     interface: str = "wg0"
+    #: Basic Auth credentials for the fabric's /register endpoint. The fabric
+    #: guards every endpoint but /health (see fabric/src/fabric/app.py) — an
+    #: appliance with no credentials configured simply never attaches, rather
+    #: than trying and failing repeatedly against a server it can't reach.
+    username: str = ""
+    password: str = ""
 
 
 @dataclass(slots=True)

@@ -7,6 +7,8 @@ probing a BACKUP link.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from dirty.atomics.model import Atomic, Capacity, Kind, Mode
@@ -14,16 +16,20 @@ from dirty.capacity import HistoricalHint, blend
 from dirty.clock import VirtualClock
 from dirty.config import Config, load
 from dirty.daemon import Daemon
+from dirty.demand import CounterDemand, StaticDemand
+from dirty.enforce import LinuxEnforcer, MockEnforcer
 from dirty.hal import build_hal
 from dirty.probe import (
     CONFIDENCE_HALF_LIFE_S,
+    LinuxProber,
     Observation,
+    ScriptedProber,
     decay_confidence,
     fold,
     may_probe_actively,
 )
 from dirty.telemetry import Telemetry
-from dirty.tunnel import fabric_compatible, version_tuple
+from dirty.tunnel import MockTunnel, WireGuardTunnel, fabric_compatible, version_tuple
 
 
 @pytest.fixture
@@ -70,6 +76,94 @@ class TestDaemonLifecycle:
         daemon.start()
         daemon.tick()
         json.dumps(daemon.state_snapshot())
+
+
+class TestRealHardwareSelection:
+    """`self.hal.mocked` is the single switch between the fake and real worlds.
+
+    Every workstream shipped a real implementation (LinuxEnforcer, LinuxProber,
+    CounterDemand, WireGuardTunnel) that was previously dead code — nothing
+    constructed them. These tests guard that the daemon actually reaches for
+    them once there is real hardware to back them, and keeps using the fakes
+    under MOCK_HW=1 exactly as before.
+    """
+
+    def _real_hal(self):
+        # A Hal whose backends are the harmless mocks, but flagged unmocked —
+        # exercises the daemon's *selection* logic without needing a real Pi or
+        # letting any real subprocess call happen.
+        return dataclasses.replace(build_hal(force_mock=True), mocked=False)
+
+    def test_mocked_hal_selects_the_fakes(self):
+        clock = VirtualClock()
+        daemon = Daemon(
+            Config(),
+            hal=build_hal(force_mock=True),
+            clock=clock,
+            telemetry=Telemetry(clock, None),
+            persist=False,
+        )
+        assert isinstance(daemon.enforcer, MockEnforcer)
+        assert isinstance(daemon.prober, ScriptedProber)
+        assert isinstance(daemon.demand, StaticDemand)
+        assert isinstance(daemon.tunnel, MockTunnel)
+
+    def test_unmocked_hal_selects_the_real_implementations(self):
+        clock = VirtualClock()
+        daemon = Daemon(
+            Config(),
+            hal=self._real_hal(),
+            clock=clock,
+            telemetry=Telemetry(clock, None),
+            persist=False,
+        )
+        assert isinstance(daemon.enforcer, LinuxEnforcer)
+        assert isinstance(daemon.prober, LinuxProber)
+        assert isinstance(daemon.demand, CounterDemand)
+        assert isinstance(daemon.tunnel, WireGuardTunnel)
+
+    def test_explicit_override_always_wins_over_the_hal_switch(self):
+        """A caller-supplied instance is never second-guessed, mocked HAL or not."""
+        clock = VirtualClock()
+        explicit = MockEnforcer()
+        daemon = Daemon(
+            Config(),
+            hal=self._real_hal(),
+            clock=clock,
+            telemetry=Telemetry(clock, None),
+            persist=False,
+            enforcer=explicit,
+        )
+        assert daemon.enforcer is explicit
+
+    def test_no_fabric_server_configured_skips_attach_without_raising(self):
+        clock = VirtualClock()
+        daemon = Daemon(
+            Config(),
+            hal=self._real_hal(),
+            clock=clock,
+            telemetry=Telemetry(clock, None),
+            persist=False,
+        )
+        daemon.start()  # config.fabric.servers is empty by default
+        assert daemon.tunnel.status().server is None
+
+    def test_attach_is_tried_at_most_once_per_process(self, monkeypatch):
+        clock = VirtualClock()
+        config = Config()
+        config.fabric.servers = ["https://fabric.invalid"]
+        daemon = Daemon(
+            config,
+            hal=self._real_hal(),
+            clock=clock,
+            telemetry=Telemetry(clock, None),
+            persist=False,
+        )
+        calls = []
+        monkeypatch.setattr(daemon.tunnel, "attach", lambda *a, **k: calls.append(1) or False)
+        daemon.start()
+        daemon.start()
+        assert len(calls) == 1
 
 
 class TestApNeverDepends:

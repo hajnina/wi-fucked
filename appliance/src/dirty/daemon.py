@@ -22,16 +22,16 @@ from dirty.allocator import Allocation, Allocator, BackupState
 from dirty.atomics import Health, Mode, Registry
 from dirty.clock import Clock, RealClock
 from dirty.config import Config, release_info
-from dirty.demand import DemandEstimator, StaticDemand
+from dirty.demand import CounterDemand, DemandEstimator, StaticDemand
 from dirty.discovery import discover
-from dirty.enforce import Enforcer, MockEnforcer, render
+from dirty.enforce import Enforcer, LinuxEnforcer, MockEnforcer, render
 from dirty.hal import Hal, build_hal
 from dirty.logging import get_logger
 from dirty.policy import DEFAULT_PROFILES
-from dirty.probe import Prober, ScriptedProber, fold, quality_of
+from dirty.probe import LinuxProber, Prober, ScriptedProber, fold, quality_of
 from dirty.radio import RadioManager, RadioState
 from dirty.telemetry import Telemetry
-from dirty.tunnel import MockTunnel, Tunnel
+from dirty.tunnel import MockTunnel, Tunnel, WireGuardTunnel
 
 log = get_logger("daemon")
 
@@ -60,11 +60,33 @@ class Daemon:
         )
         self.registry = Registry(self.clock, config.registry_path if persist else None)
         self.allocator = Allocator(self.clock, self.telemetry, config.thresholds)
-        self.enforcer = enforcer or MockEnforcer()
-        self.prober = prober or ScriptedProber()
-        self.demand = demand or StaticDemand(DEFAULT_PROFILES)
+
+        # Real, hardware-backed implementations when there is real hardware to
+        # back them; the scripted/mock fakes otherwise. `self.hal.mocked` is the
+        # single source of truth for which world this process is in — build_hal()
+        # already resolved MOCK_HW into it, so nothing here re-reads the env var.
+        real_hw = not self.hal.mocked
+        self.enforcer = enforcer or (
+            LinuxEnforcer(lan_mode=config.lan.lan_mode) if real_hw else MockEnforcer()
+        )
+        self.prober = prober or (LinuxProber(self.hal, self.clock) if real_hw else ScriptedProber())
+        self.demand = demand or (
+            CounterDemand(
+                DEFAULT_PROFILES, hal=self.hal, clock=self.clock, lan_mode=config.lan.lan_mode
+            )
+            if real_hw
+            else StaticDemand(DEFAULT_PROFILES)
+        )
         self.radio = RadioManager(self.hal, self.telemetry)
-        self.tunnel = tunnel or MockTunnel(self.release.get("DIRTY_FABRIC_MIN", "0.0.0"))
+        fabric_min = self.release.get("DIRTY_FABRIC_MIN", "0.0.0")
+        self.tunnel = tunnel or (
+            WireGuardTunnel(fabric_min, interface=config.fabric.interface)
+            if real_hw
+            else MockTunnel(fabric_min)
+        )
+        #: Set once `attach()` has been tried, so start() only ever tries the
+        #: one-shot fabric registration a single time per process lifetime.
+        self._fabric_attach_tried = False
 
         self.allocation: Allocation | None = None
         self.radio_state: RadioState | None = None
@@ -89,6 +111,37 @@ class Daemon:
         # Discover before the first decision so we never allocate against an
         # empty world and briefly conclude there is no connectivity.
         self.discover_once()
+        self._attach_fabric_once()
+
+    def _attach_fabric_once(self) -> None:
+        """Register with the first configured fabric server, one time.
+
+        Only the real tunnel knows how to attach; MockTunnel has nothing to do
+        here. A retry loop belongs to a later phase (Phase 2's multi-server
+        fabric) — for now a failed attach logs clearly and status() reports why,
+        which is enough to diagnose from the dashboard.
+        """
+        if self._fabric_attach_tried or not isinstance(self.tunnel, WireGuardTunnel):
+            return
+        self._fabric_attach_tried = True
+        servers = self.config.fabric.servers
+        if not servers:
+            log.info(
+                "No fabric server configured; tunnel will stay down",
+                extra={
+                    "workflow": "fabric_attach",
+                    "state": "skipped",
+                    "intent": "establish the stable tunnel",
+                    "reason": "config.fabric.servers is empty",
+                },
+            )
+            return
+        self.tunnel.attach(
+            servers[0],
+            username=self.config.fabric.username,
+            password=self.config.fabric.password,
+            version=self.release.get("DIRTY_VERSION", "0.0.0-dev"),
+        )
 
     def stop(self) -> None:
         """Stop the loops.

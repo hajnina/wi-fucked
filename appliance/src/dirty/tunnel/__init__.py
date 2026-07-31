@@ -12,15 +12,29 @@ by rerouting the fabric endpoint onto the active WAN.
 
 from __future__ import annotations
 
+import base64
 import enum
+import json
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from dirty.logging import get_logger
 
 log = get_logger("tunnel")
+
+#: Where firstboot.sh generates the device's WireGuard identity (SOP-008: never
+#: baked into an image, generated once on-device). Read-only from here.
+DEFAULT_PRIVATE_KEY_FILE = Path("/etc/wireguard/dirty-privatekey")
+DEFAULT_PUBLIC_KEY_FILE = Path("/etc/wireguard/dirty-publickey")
+
+#: The registration call is one-shot at startup, not on the fast/medium loop —
+#: generous relative to those, cheap relative to a human waiting on first boot.
+_REGISTER_TIMEOUT_S = 10.0
 
 #: WireGuard rekeys roughly every 120 s (REKEY_AFTER_TIME). A peer that has not
 #: completed a handshake in this long is treated as DOWN — the margin over 120 s
@@ -195,6 +209,77 @@ def _default_gateway(ifname: str) -> str | None:
         if "via" in fields:
             return fields[fields.index("via") + 1]
     return None
+
+
+def _basic_auth_header(username: str, password: str) -> str:
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return f"Basic {token}"
+
+
+def _http_json(
+    method: str,
+    url: str,
+    *,
+    username: str = "",
+    password: str = "",
+    payload: dict | None = None,
+    timeout: float = _REGISTER_TIMEOUT_S,
+) -> tuple[dict | None, int | None]:
+    """One HTTP call, JSON in and out. Never raises.
+
+    Returns ``(body, status_code)`` — ``status_code`` is set even on a non-2xx
+    response (the fabric's error responses are meaningful JSON, e.g. 409 for a
+    version floor, 503 for a backend outage) so callers can react to *why* a
+    registration failed, not just that it did.
+    """
+    data = json.dumps(payload).encode() if payload is not None else None
+    # The URL is operator-configured (config.fabric.servers), never user input.
+    request = urllib.request.Request(url, data=data, method=method)  # noqa: S310
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
+    if username or password:
+        request.add_header("Authorization", _basic_auth_header(username, password))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+            body = json.loads(response.read())
+            return body, response.status
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read())
+        except (json.JSONDecodeError, OSError):
+            body = None
+        return body, exc.code
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        log.warning(
+            "Fabric HTTP call failed",
+            extra={
+                "workflow": "fabric_attach",
+                "state": "failed",
+                "intent": "reach the configured fabric server",
+                "url": url,
+                "reason": str(exc),
+            },
+        )
+        return None, None
+
+
+def _read_public_key(path: Path) -> str | None:
+    try:
+        key = path.read_text().strip()
+    except OSError as exc:
+        log.warning(
+            "Cannot read device WireGuard public key",
+            extra={
+                "workflow": "fabric_attach",
+                "state": "failed",
+                "intent": "identify this device to the fabric",
+                "path": str(path),
+                "reason": "firstboot.sh generates this file; has first boot run?",
+                "error": str(exc),
+            },
+        )
+        return None
+    return key or None
 
 
 class MockTunnel(Tunnel):
@@ -384,4 +469,179 @@ class WireGuardTunnel(Tunnel):
                 "duration_ms": round((time.monotonic() - started) * 1000, 1),
             },
         )
+        return True
+
+    def attach(
+        self,
+        server_url: str,
+        username: str = "",
+        password: str = "",
+        version: str = "0.0.0-dev",
+        private_key_path: Path = DEFAULT_PRIVATE_KEY_FILE,
+        public_key_path: Path = DEFAULT_PUBLIC_KEY_FILE,
+    ) -> bool:
+        """Register with a fabric server and bring the local interface up.
+
+        One-shot: called once at daemon startup, not on the fast/medium loop.
+        Checks ``/health`` first (unauthenticated, cheap) so an incompatible or
+        unreachable fabric is reported clearly via :meth:`status` even when
+        registration itself never happens — a tunnel that never explains why it
+        is down is a support call waiting to happen.
+        """
+        health, _ = _http_json("GET", f"{server_url.rstrip('/')}/health")
+        if health is None:
+            log.warning(
+                "Fabric unreachable; tunnel will not attach",
+                extra={
+                    "workflow": "fabric_attach",
+                    "state": "failed",
+                    "intent": "establish the stable tunnel",
+                    "server_url": server_url,
+                    "reason": "GET /health did not return a usable response",
+                },
+            )
+            return False
+
+        server_version = health.get("version")
+        endpoint = health.get("address") or server_url
+        self.set_server(
+            FabricServer(
+                name=server_url, endpoint=str(endpoint), public_key="", version=server_version
+            )
+        )
+        if not fabric_compatible(server_version, self._fabric_min):
+            log.error(
+                "Fabric is below this appliance's protocol floor; refusing to attach",
+                extra={
+                    "workflow": "fabric_attach",
+                    "state": "failed",
+                    "intent": "refuse a tunnel that would half-work rather than fail clearly",
+                    "server_url": server_url,
+                    "server_version": server_version,
+                    "fabric_min": self._fabric_min,
+                },
+            )
+            return False
+
+        public_key = _read_public_key(public_key_path)
+        if public_key is None:
+            return False
+
+        body, status = _http_json(
+            "POST",
+            f"{server_url.rstrip('/')}/register",
+            username=username,
+            password=password,
+            payload={"version": version, "public_key": public_key},
+        )
+        if body is None or status != 200:
+            log.warning(
+                "Fabric registration failed",
+                extra={
+                    "workflow": "fabric_attach",
+                    "state": "failed",
+                    "intent": "establish the stable tunnel",
+                    "server_url": server_url,
+                    "status": status,
+                    "detail": (body or {}).get("error") if body else None,
+                },
+            )
+            return False
+
+        fabric_public_key = body.get("fabric_public_key")
+        assigned_address = body.get("assigned_address")
+        tunnel_pool = body.get("tunnel_pool")
+        wg_endpoint = body.get("endpoint") or endpoint
+        if not fabric_public_key or not assigned_address or not tunnel_pool:
+            log.error(
+                "Fabric registration response missing required fields",
+                extra={
+                    "workflow": "fabric_attach",
+                    "state": "failed",
+                    "intent": "establish the stable tunnel",
+                    "server_url": server_url,
+                    "response_keys": sorted(body.keys()),
+                },
+            )
+            return False
+
+        if not self._configure_interface(
+            private_key_path,
+            fabric_public_key,
+            str(wg_endpoint),
+            str(tunnel_pool),
+            str(assigned_address),
+        ):
+            return False
+
+        self.set_server(
+            FabricServer(
+                name=server_url,
+                endpoint=str(wg_endpoint),
+                public_key=str(fabric_public_key),
+                version=server_version,
+                healthy=True,
+            )
+        )
+        log.info(
+            "Attached to fabric",
+            extra={
+                "workflow": "fabric_attach",
+                "state": "completed",
+                "intent": "establish the stable tunnel",
+                "server_url": server_url,
+                "assigned_address": assigned_address,
+                "endpoint": str(wg_endpoint),
+            },
+        )
+        return True
+
+    def _configure_interface(
+        self,
+        private_key_path: Path,
+        peer_public_key: str,
+        endpoint: str,
+        allowed_ips: str,
+        local_address: str,
+    ) -> bool:
+        """Bring ``wg0`` up with the device's key, the fabric peer, and its
+        assigned tunnel address. Every step is additive/idempotent — a rerun
+        (e.g. after a daemon restart) tolerates "File exists" rather than
+        tearing anything down first (ADR-008).
+        """
+        if _run(["ip", "link", "add", "dev", self._interface, "type", "wireguard"]) is None:
+            # Tolerated: either it already exists (fine) or `ip` truly failed, in
+            # which case the next command fails too and we report that instead.
+            pass
+        ok = _run(
+            [
+                "wg",
+                "set",
+                self._interface,
+                "private-key",
+                str(private_key_path),
+                "peer",
+                peer_public_key,
+                "endpoint",
+                endpoint,
+                "allowed-ips",
+                allowed_ips,
+                "persistent-keepalive",
+                "25",
+            ]
+        )
+        if ok is None:
+            log.error(
+                "Could not configure WireGuard interface",
+                extra={
+                    "workflow": "fabric_attach",
+                    "state": "failed",
+                    "intent": "establish the stable tunnel",
+                    "interface": self._interface,
+                    "reason": "wg set failed — see the preceding tunnel_command log",
+                },
+            )
+            return False
+        _run(["ip", "address", "add", local_address, "dev", self._interface])
+        _run(["ip", "link", "set", "up", "dev", self._interface])
         return True
