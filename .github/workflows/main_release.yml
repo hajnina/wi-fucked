@@ -145,7 +145,7 @@ jobs:
 
       - name: Commit changelog
         run: |
-          git config user.name  "wifucked-bot"
+          git config user.name  "dirty-bot"
           git config user.email "bot@wi-fucked.invalid"
           git add CHANGELOG.md
           # [skip ci] is safe here and only here: this commit touches no

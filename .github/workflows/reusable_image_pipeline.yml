@@ -66,8 +66,8 @@ jobs:
       - name: Compute asset names
         id: names
         run: |
-          echo "image=wifucked-${{ inputs.version }}-arm64.img" >> "$GITHUB_OUTPUT"
-          echo "package=wifucked-${{ inputs.version }}.wtf" >> "$GITHUB_OUTPUT"
+          echo "image=dirty-${{ inputs.version }}-arm64.img" >> "$GITHUB_OUTPUT"
+          echo "package=dirty-${{ inputs.version }}.wtf" >> "$GITHUB_OUTPUT"
 
       # The dashboard must work with no Internet. Fail before spending an hour
       # baking an image whose UI needs a CDN.
@@ -100,12 +100,12 @@ jobs:
           context: .github
           file: .github/builder.Dockerfile
           load: true
-          tags: wifucked-builder:latest
+          tags: dirty-builder:latest
 
       - name: Save builder
         if: steps.builder-cache.outputs.cache-hit != 'true'
         run: |
-          docker save wifucked-builder:latest -o builder.tar
+          docker save dirty-builder:latest -o builder.tar
           zstd -T0 -3 builder.tar -o builder.tar.zst
           rm builder.tar
 
@@ -122,7 +122,7 @@ jobs:
         if: steps.base-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          CID=$(docker run -d --privileged -v /dev:/dev wifucked-builder:latest sleep infinity)
+          CID=$(docker run -d --privileged -v /dev:/dev dirty-builder:latest sleep infinity)
           docker cp appliance "${CID}:/workspace-appliance"
           docker exec -i "${CID}" bash <<'INNER'
           set -euo pipefail
@@ -188,7 +188,7 @@ jobs:
       - name: Stage C — inject application and verify capability
         run: |
           set -euo pipefail
-          CID=$(docker run -d --privileged -v /dev:/dev wifucked-builder:latest sleep infinity)
+          CID=$(docker run -d --privileged -v /dev:/dev dirty-builder:latest sleep infinity)
           docker cp raspios-base.img.zst "${CID}:/raspios-base.img.zst"
           docker cp "${{ steps.names.outputs.package }}" "${CID}:/update.wtf"
           docker exec -i -e VERSION="${{ inputs.version }}" \
@@ -218,13 +218,13 @@ jobs:
             'cd /tmp/pkg && unzip -qo update.wtf && chmod +x update.sh && ./update.sh'
 
           # What the device knows about itself (ADR-016).
-          cat > /mnt/rpi/etc/wifucked-release <<RELEASE
-          WIFUCKED_VERSION=${VERSION}
-          WIFUCKED_COMMIT=$(echo "${COMMIT}" | cut -c1-7)
-          WIFUCKED_BUILD=${BUILD}
-          WIFUCKED_BUILT_AT=$(date -u +%FT%TZ)
-          WIFUCKED_CHANNEL=main
-          WIFUCKED_FABRIC_MIN=${WIFUCKED_FABRIC_MIN:-0.1.0}
+          cat > /mnt/rpi/etc/dirty-release <<RELEASE
+          DIRTY_VERSION=${VERSION}
+          DIRTY_COMMIT=$(echo "${COMMIT}" | cut -c1-7)
+          DIRTY_BUILD=${BUILD}
+          DIRTY_BUILT_AT=$(date -u +%FT%TZ)
+          DIRTY_CHANNEL=main
+          DIRTY_FABRIC_MIN=${DIRTY_FABRIC_MIN:-0.1.0}
           RELEASE
 
           # Capability gate. An image that cannot shape traffic or move the AP
@@ -242,16 +242,16 @@ jobs:
             command -v tc      > /dev/null || { echo "FATAL: tc missing";      exit 1; }
             command -v hostapd > /dev/null || { echo "FATAL: hostapd missing"; exit 1; }
             command -v dnsmasq > /dev/null || { echo "FATAL: dnsmasq missing"; exit 1; }
-            test -f /opt/wifucked/current/src/wifucked/__init__.py || { echo "FATAL: app not installed"; exit 1; }
+            test -f /opt/dirty/current/src/dirty/__init__.py || { echo "FATAL: app not installed"; exit 1; }
             echo "capability gate: OK"
           '
 
           # The AP must not depend on the daemon (ADR-011). Assert it in the
           # image rather than discovering otherwise on a device.
           echo "--- anchor gate"
-          if grep -qE '^(Requires|BindsTo|PartOf)=.*wifucked\.service' \
+          if grep -qE '^(Requires|BindsTo|PartOf)=.*dirty\.service' \
                /mnt/rpi/etc/systemd/system/hostapd.service.d/*.conf 2>/dev/null; then
-            echo "FATAL: hostapd depends on wifucked.service — the AP must be the anchor"
+            echo "FATAL: hostapd depends on dirty.service — the AP must be the anchor"
             exit 1
           fi
           echo "anchor gate: OK"
@@ -259,10 +259,10 @@ jobs:
           rm -rf /mnt/rpi/tmp/pkg
           for d in dev/pts dev sys proc ''; do umount -l /mnt/rpi/$d || true; done
           losetup -d "${LOOP}"
-          mv /build/final.img /wifucked.img
+          mv /build/final.img /dirty.img
           rm -rf /build
           INNER
-          docker cp "${CID}:/wifucked.img" "${{ steps.names.outputs.image }}"
+          docker cp "${CID}:/dirty.img" "${{ steps.names.outputs.image }}"
           docker rm -f "${CID}"
 
       - name: Compress and checksum
@@ -285,7 +285,7 @@ jobs:
         if: ${{ !inputs.publish }}
         uses: actions/upload-artifact@v4
         with:
-          name: wifucked-${{ inputs.version }}
+          name: dirty-${{ inputs.version }}
           retention-days: 14
           path: |
             ${{ steps.names.outputs.image }}.zst
