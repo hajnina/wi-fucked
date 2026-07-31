@@ -23,7 +23,7 @@ around proven networking primitives.
 **The control plane is Python. The data plane is the kernel. No packet is ever
 touched by Python.**
 
-The `dirty` daemon observes the network, decides what should happen, and programs
+The `wifucked` daemon observes the network, decides what should happen, and programs
 `tc`/CAKE, `nftables`, and policy routing to make it happen. Forwarding, shaping,
 queueing, and encryption occur entirely in kernel space.
 

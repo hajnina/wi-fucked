@@ -139,7 +139,7 @@ def test_prereleases_sort_below_their_release(repo):
     SemVer orders 1.5.0-pr42.abc < 1.5.0, so a device comparing versions can
     never mistake a prerelease for something released.
     """
-    from dirty.tunnel import version_tuple
+    from wifucked.tunnel import version_tuple
 
     _git(repo, "tag", "-a", "v1.4.2", "-m", "release")
     _commit(repo, "feat: something")

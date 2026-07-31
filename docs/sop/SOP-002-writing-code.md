@@ -72,7 +72,7 @@ Anything touching a radio, netlink, USB enumeration, the LED, or privileged syst
 facts goes through `hal/`, so `MOCK_HW=1` can replace it.
 
 ```python
-from dirty.hal import get_hal
+from wifucked.hal import get_hal
 
 hal = get_hal()          # real or mock, decided by MOCK_HW
 scan = hal.wifi.scan()

@@ -28,7 +28,7 @@ carrying traffic simultaneously is not reachable on this BOM.
 
 So, explicitly:
 
-> **On the base BOM, DIRTY delivers seamless, session-preserving *failover*
+> **On the base BOM, WI-FUCKED delivers seamless, session-preserving *failover*
 > between WANs — not bandwidth aggregation.**
 
 This is the right trade, not a consolation prize:

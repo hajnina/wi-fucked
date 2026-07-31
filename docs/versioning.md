@@ -45,8 +45,8 @@ Names are constructible from the version, so the OTA client never scrapes the AP
 
 | Asset | Contents |
 |---|---|
-| `dirty-<X.Y.Z>-arm64.img.zst` | Full SD-card image |
-| `dirty-<X.Y.Z>.wtf` | OTA update package (*Wi-Fucked Transfer Format*) |
+| `wifucked-<X.Y.Z>-arm64.img.zst` | Full SD-card image |
+| `wifucked-<X.Y.Z>.wtf` | OTA update package (*Wi-Fucked Transfer Format*) |
 | `manifest.json` | The one file the OTA client reads |
 | `SHA256SUMS` | Checksums for both artifacts |
 | `test-output.log` | The suite that gated this release |
@@ -60,8 +60,8 @@ Plus the matching fabric container: `ghcr.io/hajnina/wi-fucked/fabric:X.Y.Z`.
   "version": "1.4.0",
   "released_at": "2026-07-30T14:22:11Z",
   "commit": "abc1234",
-  "image_url":   "https://github.com/.../dirty-1.4.0-arm64.img.zst",
-  "package_url": "https://github.com/.../dirty-1.4.0.wtf",
+  "image_url":   "https://github.com/.../wifucked-1.4.0-arm64.img.zst",
+  "package_url": "https://github.com/.../wifucked-1.4.0.wtf",
   "sha256": { "image": "…", "package": "…" },
   "fabric_image": "ghcr.io/hajnina/wi-fucked/fabric:1.4.0",
   "min_upgradable_from": "1.0.0"
@@ -86,20 +86,20 @@ devices may already have it, and removing it breaks their rollback path.
 
 ## What the device knows about itself
 
-`/etc/dirty-release`, written into the image at bake time:
+`/etc/wifucked-release`, written into the image at bake time:
 
 ```sh
-DIRTY_VERSION=1.4.0
-DIRTY_COMMIT=abc1234
-DIRTY_BUILD=42
-DIRTY_BUILT_AT=2026-07-30T14:22:11Z
-DIRTY_CHANNEL=main
-DIRTY_FABRIC_MIN=1.2.0
+WIFUCKED_VERSION=1.4.0
+WIFUCKED_COMMIT=abc1234
+WIFUCKED_BUILD=42
+WIFUCKED_BUILT_AT=2026-07-30T14:22:11Z
+WIFUCKED_CHANNEL=main
+WIFUCKED_FABRIC_MIN=1.2.0
 ```
 
-`DIRTY_FABRIC_MIN` is the **protocol floor**. The appliance refuses to attach to a
+`WIFUCKED_FABRIC_MIN` is the **protocol floor**. The appliance refuses to attach to a
 fabric older than this rather than failing mysteriously mid-tunnel. Changing the
-tunnel protocol means all three, in one PR: a `feat!:` commit, a `DIRTY_FABRIC_MIN`
+tunnel protocol means all three, in one PR: a `feat!:` commit, a `WIFUCKED_FABRIC_MIN`
 bump, and an ADR.
 
 ## Appliance and fabric are two ends of one protocol

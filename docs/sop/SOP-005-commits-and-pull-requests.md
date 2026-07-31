@@ -35,7 +35,7 @@ Not "a big change." It means one of:
 
 - The OTA package cannot be applied to the previous version.
 - The fabric protocol changed — an appliance and fabric at adjacent versions can
-  no longer talk (bump `DIRTY_FABRIC_MIN`).
+  no longer talk (bump `WIFUCKED_FABRIC_MIN`).
 - A user's stored configuration needs migration.
 - A user-facing behaviour they relied on is gone.
 
@@ -76,6 +76,12 @@ chore: wip                         ← not a change anyone can review
 **All PRs target `main`.** There is no other branch
 ([`../versioning.md`](../versioning.md)).
 
+### Open automatically, don't wait to be asked
+
+The moment work is committed and pushed to a branch, open the PR. Do not treat
+PR creation as something that needs a separate request — a pushed branch with
+no PR is unfinished work, not a deliberate pause point.
+
 ### Ownership and follow-through
 
 Opening a PR creates an ownership obligation. Its author makes one CI-and-review
@@ -83,6 +89,13 @@ check five minutes after opening the PR or pushing an update, then makes one
 check every 30 minutes. They respond to actionable feedback, fix failures, and
 follow the PR through until it is merged or closed. Do not leave a PR for someone
 else to discover after its checks fail or a reviewer comments.
+
+### Merge automatically once green
+
+Once CI passes and there is no unresolved reviewer feedback blocking the change,
+merge it — do not leave a green PR idle waiting for someone to click the button.
+If a reviewer has requested changes or left an open question, resolve it first;
+silence from a reviewer within the check-in cadence above is not a block.
 
 #### Waiting for CI without polling by hand
 

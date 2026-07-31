@@ -1,0 +1,16 @@
+# Factory reset by power cycle (ADR-015). Runs early so a user holding the
+# power switch gets counted before anything else can fail.
+
+[Unit]
+Description=WI-FUCKED boot counter and factory reset
+DefaultDependencies=no
+After=local-fs.target
+Before=wifucked.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/wifucked/bootcount.sh
+
+[Install]
+WantedBy=sysinit.target

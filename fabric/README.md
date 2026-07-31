@@ -8,11 +8,11 @@ it.
 ## Quick start
 
 ```bash
-docker build -t dirty-fabric fabric
+docker build -t wifucked-fabric fabric
 docker run -it \
   --cap-add=NET_ADMIN --device /dev/net/tun \
   -p 8081:8081 -p 51820:51820/udp \
-  dirty-fabric
+  wifucked-fabric
 ```
 
 `--cap-add=NET_ADMIN` lets the container create the `wg0` interface and add
@@ -52,7 +52,7 @@ docker run -d \
   -e FABRIC_ADDRESS=fabric.example.com:51820 \
   -e FABRIC_USERNAME=admin \
   -e FABRIC_PASSWORD=hunter2 \
-  dirty-fabric
+  wifucked-fabric
 ```
 
 | Variable | Meaning |
@@ -72,7 +72,7 @@ puts the capability in the container's bounding set, but a non-root process does
 run the container as root so the capability is effective:
 
 ```bash
-docker run -d --user 0 --cap-add=NET_ADMIN --device /dev/net/tun ... dirty-fabric
+docker run -d --user 0 --cap-add=NET_ADMIN --device /dev/net/tun ... wifucked-fabric
 ```
 
 Configuring ambient capabilities so the non-root user keeps `NET_ADMIN` is the

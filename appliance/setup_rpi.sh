@@ -9,12 +9,12 @@
 #
 set -euo pipefail
 
-exec > >(tee -a /var/log/dirty-setup.log) 2>&1
-echo "=== dirty: base provisioning starting at $(date -u +%FT%TZ) ==="
+exec > >(tee -a /var/log/wifucked-setup.log) 2>&1
+echo "=== wifucked: base provisioning starting at $(date -u +%FT%TZ) ==="
 
 REPO="${REPO:-/tmp/repo}"
-BASE_DIR=/opt/dirty
-STATE_DIR=/var/lib/dirty
+BASE_DIR=/opt/wifucked
+STATE_DIR=/var/lib/wifucked
 
 # --- packages ---------------------------------------------------------------
 
@@ -37,23 +37,23 @@ mkdir -p "${BASE_DIR}/versions" "${BASE_DIR}/snapshots" "${STATE_DIR}"
 echo "--- installing units and configuration"
 cp -r "${REPO}/stage-custom/etc/." /etc/
 cp -r "${REPO}/stage-custom/opt/." /opt/
-chmod 755 /opt/dirty/*.sh
+chmod 755 /opt/wifucked/*.sh
 
-# hostapd and dnsmasq are enabled independently of dirty.service. If the daemon
+# hostapd and dnsmasq are enabled independently of wifucked.service. If the daemon
 # is absent, crashed, or being updated, the AP keeps serving (ADR-011). Do not
 # add a dependency between them.
 systemctl unmask hostapd || true
 systemctl enable hostapd
 systemctl enable dnsmasq
-systemctl enable dirty-firstboot.service
-systemctl enable dirty-bootcount.service
-systemctl enable dirty.service
-systemctl enable dirty-watchdog.timer
+systemctl enable wifucked-firstboot.service
+systemctl enable wifucked-bootcount.service
+systemctl enable wifucked.service
+systemctl enable wifucked-watchdog.timer
 
 # NetworkManager must not manage the AP interface or fight us over the WAN
 # routes we install.
 mkdir -p /etc/NetworkManager/conf.d
-cat > /etc/NetworkManager/conf.d/10-dirty.conf <<'EOF'
+cat > /etc/NetworkManager/conf.d/10-wifucked.conf <<'EOF'
 [main]
 dns=none
 
@@ -63,7 +63,7 @@ EOF
 
 # --- forwarding -------------------------------------------------------------
 
-cat > /etc/sysctl.d/90-dirty.conf <<'EOF'
+cat > /etc/sysctl.d/90-wifucked.conf <<'EOF'
 net.ipv4.ip_forward=1
 net.ipv6.conf.all.forwarding=1
 # The appliance holds multiple default routes; strict reverse-path filtering
@@ -77,8 +77,8 @@ EOF
 # this hardware (docs/hardware.md), so hot writes go to tmpfs and telemetry is
 # flushed periodically (ADR-010).
 
-cat > /etc/tmpfiles.d/dirty.conf <<'EOF'
-d /run/dirty 0755 root root -
+cat > /etc/tmpfiles.d/wifucked.conf <<'EOF'
+d /run/wifucked 0755 root root -
 EOF
 
 sed -i 's/#Storage=auto/Storage=volatile/' /etc/systemd/journald.conf || true
@@ -101,4 +101,4 @@ command -v nft > /dev/null || { echo "FATAL: nft missing"; exit 1; }
 command -v tc  > /dev/null || { echo "FATAL: tc missing"; exit 1; }
 command -v hostapd > /dev/null || { echo "FATAL: hostapd missing"; exit 1; }
 
-echo "=== dirty: base provisioning complete at $(date -u +%FT%TZ) ==="
+echo "=== wifucked: base provisioning complete at $(date -u +%FT%TZ) ==="

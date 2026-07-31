@@ -14,15 +14,15 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from dirty.atomics.model import Atomic, Health, Kind, Mode
-from dirty.clock import VirtualClock
-from dirty.config import Config
-from dirty.daemon import Daemon
-from dirty.demand import StaticDemand
-from dirty.hal import build_hal
-from dirty.policy import DEFAULT_PROFILES
-from dirty.probe import Observation, ScriptedProber
-from dirty.telemetry import Telemetry
+from wifucked.atomics.model import Atomic, Health, Kind, Mode
+from wifucked.clock import VirtualClock
+from wifucked.config import Config
+from wifucked.daemon import Daemon
+from wifucked.demand import StaticDemand
+from wifucked.hal import build_hal
+from wifucked.policy import DEFAULT_PROFILES
+from wifucked.probe import Observation, ScriptedProber
+from wifucked.telemetry import Telemetry
 
 
 @dataclass

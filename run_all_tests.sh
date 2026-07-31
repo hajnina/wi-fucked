@@ -36,7 +36,7 @@ fi
 
 if command -v shellcheck > /dev/null; then
     step "Shellcheck"
-    shellcheck appliance/*.sh scripts/*.sh appliance/stage-custom/opt/dirty/*.sh \
+    shellcheck appliance/*.sh scripts/*.sh appliance/stage-custom/opt/wifucked/*.sh \
         fabric/*.sh run_all_tests.sh || fail "shellcheck"
 else
     echo "shellcheck not installed; skipping"

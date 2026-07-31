@@ -8,7 +8,7 @@
 The appliance is the user's only route to the Internet. It runs unattended, in
 places where nobody can service it, for users who cannot debug it.
 
-The `dirty` daemon is a Python program under active development by people learning
+The `wifucked` daemon is a Python program under active development by people learning
 the system. It will crash. It will be OOM-killed on a 512 MB device. It will be
 restarted by OTA updates. That is expected and acceptable.
 

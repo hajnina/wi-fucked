@@ -5,7 +5,7 @@
 > **Control plane is Python. Data plane is the kernel. No packet is ever touched
 > by Python.**
 
-The `dirty` daemon observes the network, decides what should happen, and *programs*
+The `wifucked` daemon observes the network, decides what should happen, and *programs*
 `tc`/CAKE, `nftables`, and policy routing to make it happen. Forwarding, shaping,
 and queueing occur entirely in kernel space.
 
@@ -28,7 +28,7 @@ Two properties fall out of this, and both are load-bearing:
    Cellular    ──┘                            │       │       │
         │                                   laptop  phone    TV
         ▼
-      DIRTY ──────── stable tunnel ──────── fabric ──── Internet
+      WI-FUCKED ──────── stable tunnel ──────── fabric ──── Internet
 ```
 
 Client devices never learn which WAN is in use, never need special software, and
@@ -52,7 +52,7 @@ not sit in the hot path.
 ## Modules
 
 ```
-dirty/
+wifucked/
 ├── atomics/     Atomic model · NORMAL/BACKUP/UNUSED · stable identity · persistence
 ├── discovery/   wifi · USB tether · USB ethernet · ModemManager → atomics
 ├── probe/       RTT · jitter · loss · capacity estimation · bufferbloat detection
@@ -141,7 +141,7 @@ fabric is MVP scope rather than a later addition
 ([ADR-005](adr/ADR-005-tunnel-is-mandatory.md)).
 
 WANs are treated as hostile — public Wi-Fi especially. The tunnel is the security
-boundary between the dirty Internet and the balanced LAN, and LAN services are
+boundary between the wifucked Internet and the balanced LAN, and LAN services are
 never exposed through an arbitrary WAN.
 
 ## Enforcement
@@ -162,7 +162,7 @@ interface churn. See [ADR-007](adr/ADR-007-reconciliation.md).
 ## Always-available LAN
 
 The AP is the anchor. `hostapd` and `dnsmasq` are independent systemd units with
-no dependency on `dirty.service`. If the daemon crashes, is being updated, or is
+no dependency on `wifucked.service`. If the daemon crashes, is being updated, or is
 wedged, the AP keeps serving and clients keep their leases — and because kernel
 rules persist, Internet keeps working too.
 

@@ -52,7 +52,7 @@ treated as hostile, and LAN services are never exposed through an arbitrary WAN.
   encryption. WireGuard on the A53 caps around 30–50 Mbps — above the radio's
   ceiling, so not currently binding, but it is a real ceiling.
 - Version skew between appliance and fabric can break connectivity entirely, which
-  is why `DIRTY_FABRIC_MIN` exists ([ADR-016](ADR-016-versioning.md)).
+  is why `WIFUCKED_FABRIC_MIN` exists ([ADR-016](ADR-016-versioning.md)).
 
 **Must stay true:** the fabric stays reachable and adequately provisioned. A
 saturated fabric degrades every user simultaneously — a failure mode with no

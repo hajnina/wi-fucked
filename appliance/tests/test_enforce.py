@@ -18,9 +18,9 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import patch
 
-from dirty.allocator import Allocation, Share
-from dirty.atomics.model import Atomic, Capacity, Kind, Mode
-from dirty.enforce import (
+from wifucked.allocator import Allocation, Share
+from wifucked.atomics.model import Atomic, Capacity, Kind, Mode
+from wifucked.enforce import (
     DesiredState,
     LinuxEnforcer,
     RouteRule,
@@ -29,7 +29,7 @@ from dirty.enforce import (
     _parse_rate,
     render,
 )
-from dirty.policy import BEST_EFFORT, CRITICAL
+from wifucked.policy import BEST_EFFORT, CRITICAL
 
 
 def _completed(
@@ -84,8 +84,8 @@ def test_render_marks_are_independent_of_active_shares():
 
 def test_nft_ruleset_uses_atomic_flush_idiom_and_marks_per_bss():
     script = LinuxEnforcer(lan_mode="two_bss", base_interface="wlan0")._nft_ruleset()
-    assert "table inet dirty" in script
-    assert "flush table inet dirty" in script
+    assert "table inet wifucked" in script
+    assert "flush table inet wifucked" in script
     assert "type filter hook prerouting priority mangle; policy accept;" in script
     # two_bss: critical lives on the second BSS, best-effort on the base BSS.
     assert 'iifname "wlan0_1.10" meta mark set 10' in script
@@ -106,11 +106,11 @@ def test_apply_marks_feeds_the_ruleset_to_nft_stdin():
         captured["input"] = kwargs.get("input")
         return _completed()
 
-    with patch("dirty.enforce.subprocess.run", side_effect=fake):
+    with patch("wifucked.enforce.subprocess.run", side_effect=fake):
         LinuxEnforcer()._apply_marks()
 
     assert captured["argv"] == ["nft", "-f", "-"]
-    assert "flush table inet dirty" in captured["input"]
+    assert "flush table inet wifucked" in captured["input"]
     assert "meta mark set 10" in captured["input"]
 
 
@@ -124,7 +124,7 @@ def test_apply_cake_argv():
         calls.append(argv)
         return _completed()
 
-    with patch("dirty.enforce.subprocess.run", side_effect=fake):
+    with patch("wifucked.enforce.subprocess.run", side_effect=fake):
         LinuxEnforcer()._apply_cake(
             Shaping("wlan0", down_bps=9_500_000, up_bps=0, diffserv="diffserv4")
         )
@@ -150,7 +150,7 @@ def test_apply_route_installs_rule_with_deterministic_priority_and_default_route
         calls.append(argv)
         return _completed()
 
-    with patch("dirty.enforce.subprocess.run", side_effect=fake):
+    with patch("wifucked.enforce.subprocess.run", side_effect=fake):
         LinuxEnforcer()._apply_route(RouteRule(fwmark=10, table=100, ifname="usb0"))
 
     assert ["ip", "rule", "add", "fwmark", "10", "lookup", "100", "priority", "10010"] in calls
@@ -164,7 +164,7 @@ def test_apply_route_tolerates_an_already_present_rule():
         return _completed()
 
     # Must not raise — the duplicate-add is the idempotent happy path.
-    with patch("dirty.enforce.subprocess.run", side_effect=fake):
+    with patch("wifucked.enforce.subprocess.run", side_effect=fake):
         LinuxEnforcer()._apply_route(RouteRule(fwmark=10, table=100, ifname="usb0"))
 
 
@@ -181,13 +181,13 @@ _TC_JSON = """
 _NFT_JSON = """
 {"nftables":[
   {"metainfo":{"version":"1.1.1","json_schema_version":1}},
-  {"table":{"family":"inet","name":"dirty","handle":1}},
-  {"chain":{"family":"inet","table":"dirty","name":"mark","handle":1,
+  {"table":{"family":"inet","name":"wifucked","handle":1}},
+  {"chain":{"family":"inet","table":"wifucked","name":"mark","handle":1,
             "type":"filter","hook":"prerouting","prio":-150,"policy":"accept"}},
-  {"rule":{"family":"inet","table":"dirty","chain":"mark","handle":2,"expr":[
+  {"rule":{"family":"inet","table":"wifucked","chain":"mark","handle":2,"expr":[
      {"match":{"op":"==","left":{"meta":{"key":"iifname"}},"right":"wlan0_1.10"}},
      {"mangle":{"key":{"meta":{"key":"mark"}},"value":10}}]}},
-  {"rule":{"family":"inet","table":"dirty","chain":"mark","handle":3,"expr":[
+  {"rule":{"family":"inet","table":"wifucked","chain":"mark","handle":3,"expr":[
      {"match":{"op":"==","left":{"meta":{"key":"iifname"}},"right":"wlan0.20"}},
      {"mangle":{"key":{"meta":{"key":"mark"}},"value":20}}]}}
 ]}
@@ -220,7 +220,7 @@ def _read_dispatch(argv, **kwargs):
 
 
 def test_actual_parses_real_kernel_json():
-    with patch("dirty.enforce.subprocess.run", side_effect=_read_dispatch):
+    with patch("wifucked.enforce.subprocess.run", side_effect=_read_dispatch):
         state = LinuxEnforcer().actual()
 
     assert state is not None
@@ -238,7 +238,7 @@ def test_actual_is_none_when_every_read_fails():
     def fake(argv, **kwargs):
         return _completed(returncode=1, stderr="Operation not permitted")
 
-    with patch("dirty.enforce.subprocess.run", side_effect=fake):
+    with patch("wifucked.enforce.subprocess.run", side_effect=fake):
         assert LinuxEnforcer().actual() is None
 
 
@@ -264,7 +264,7 @@ def test_reconcile_is_a_noop_when_kernel_already_matches():
         marks=((10, 10), (20, 20)),
     )
     applied: list[list[str]] = []
-    with patch("dirty.enforce.subprocess.run", side_effect=_reconcile_dispatch(applied)):
+    with patch("wifucked.enforce.subprocess.run", side_effect=_reconcile_dispatch(applied)):
         LinuxEnforcer().reconcile(desired)
 
     assert applied == []  # already converged — nothing programmed
@@ -277,7 +277,7 @@ def test_reconcile_programs_the_kernel_when_shaping_diverges():
         marks=((10, 10), (20, 20)),
     )
     applied: list[list[str]] = []
-    with patch("dirty.enforce.subprocess.run", side_effect=_reconcile_dispatch(applied)):
+    with patch("wifucked.enforce.subprocess.run", side_effect=_reconcile_dispatch(applied)):
         LinuxEnforcer().reconcile(desired)
 
     assert any(a[:3] == ["tc", "qdisc", "replace"] for a in applied)
@@ -292,7 +292,7 @@ def test_dry_run_never_shells_out():
         Allocation("atomic-w", False, (Share("atomic-w", CRITICAL.name, 5_000_000),)),
         {"atomic-w": _atomic()},
     )
-    with patch("dirty.enforce.subprocess.run", side_effect=explode):
+    with patch("wifucked.enforce.subprocess.run", side_effect=explode):
         enforcer.reconcile(desired)
         enforcer.reconcile(desired)  # converges via memory; still no exec
 

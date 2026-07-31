@@ -6,11 +6,14 @@ to do, the rule wins.
 
 ## Git
 
-**Never run git commands unless the user explicitly asks, or to own an open
-pull request.** Once a pull request exists, its author is responsible for it:
+**Once work is committed and pushed to a branch, open a pull request for it
+automatically** — do not wait to be asked. Its author is responsible for it:
 make one CI-and-review check five minutes after opening it or pushing an update,
 then make one check every 30 minutes until it is merged or closed. Address
-actionable feedback and failures. Git is otherwise off-limits by default.
+actionable feedback and failures. **Merge automatically once CI is green** and
+there is no unresolved reviewer feedback blocking it; do not leave a passing PR
+idle waiting for a human to click merge. Everything else about git remains
+off-limits unless the user explicitly asks.
 
 ## Standard Operating Procedures — read these
 
@@ -50,7 +53,7 @@ people the wrong thing with the authority of a written procedure.
 > **The control plane is Python. The data plane is the kernel.
 > No packet is ever touched by Python.**
 
-The `dirty` daemon observes, decides, and *programs* `tc`/CAKE, `nftables`, and
+The `wifucked` daemon observes, decides, and *programs* `tc`/CAKE, `nftables`, and
 policy routing. Forwarding, shaping, and queueing happen entirely in kernel space.
 
 If you find yourself writing a socket that relays user traffic, a `select()` loop
@@ -60,7 +63,7 @@ That belongs in the kernel, expressed as a rule the daemon installs. See
 
 ## Project overview
 
-**DIRTY → BALANCED** is an autonomous connectivity appliance on a Raspberry Pi
+**WI-FUCKED → BALANCED** is an autonomous connectivity appliance on a Raspberry Pi
 Zero 2W. It aggregates chaotic WAN connectivity (Wi-Fi, USB tethering, USB
 Ethernet, cellular) and presents LAN clients two stable SSIDs — `Stable_critical`
 and `Stable_besteffort` — that never go away.
@@ -74,10 +77,10 @@ and `Stable_besteffort` — that never go away.
 
 ```bash
 # Run the daemon on a laptop, no hardware
-MOCK_HW=1 PYTHONPATH=appliance/src python3 -m dirty
+MOCK_HW=1 PYTHONPATH=appliance/src python3 -m wifucked
 
 # Run it with a scripted scenario instead of static mocks
-MOCK_HW=1 DIRTY_SCENARIO=moving_van PYTHONPATH=appliance/src python3 -m dirty
+MOCK_HW=1 WIFUCKED_SCENARIO=moving_van PYTHONPATH=appliance/src python3 -m wifucked
 
 # Everything
 ./run_all_tests.sh
@@ -108,7 +111,7 @@ These are enforced in review. Each links to the ADR that explains why.
    out — no cleanup handlers that flush tables, no `atexit` that removes qdiscs.
    ([ADR-008](docs/adr/ADR-008-fail-to-last-known-good.md))
 5. **The AP is the anchor.** `hostapd` and `dnsmasq` are independent systemd units
-   with no dependency on `dirty.service`. The daemon may reconfigure them; it must
+   with no dependency on `wifucked.service`. The daemon may reconfigure them; it must
    never own their lifecycle. ([ADR-011](docs/adr/ADR-011-ap-is-the-anchor.md))
 6. **SSID and BSSID are immutable** after first boot. Only the channel may move,
    and only via CSA. ([ADR-012](docs/adr/ADR-012-immutable-ssid.md))
@@ -127,8 +130,8 @@ no console and no reproduction. All new code MUST comply.
    alone: what happened, what went wrong, what the intent was, what the context
    was. Include variable states, timings (`duration_ms`), explicit workflow states,
    and explicit reasons for failures and fallbacks.
-3. **Proper logger hierarchy.** Use sub-loggers rooted in `dirty` —
-   `get_logger("allocator")` yields `dirty.allocator`. Never a bare string
+3. **Proper logger hierarchy.** Use sub-loggers rooted in `wifucked` —
+   `get_logger("allocator")` yields `wifucked.allocator`. Never a bare string
    disconnected from the application root.
 4. **Resilience.** Never crash on a malformed log message. `ResilientLogger`
    catches `KeyError` conflicts from overlapping `extra` keys (`name`, `msg`,

@@ -46,5 +46,5 @@ FROM with-raspios AS builder
 
 # Loop devices need --privileged at runtime; the label is documentation for
 # whoever finds this image and wonders why it will not work without it.
-LABEL dirty.builder="true"
-LABEL dirty.requires="privileged, /dev bind mount"
+LABEL wifucked.builder="true"
+LABEL wifucked.requires="privileged, /dev bind mount"

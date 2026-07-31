@@ -7,14 +7,14 @@ are all lost. See ADR-002.
 
 from __future__ import annotations
 
-from dirty.atomics.identity import (
+from wifucked.atomics.identity import (
     is_locally_administered,
     mac_id,
     modem_id,
     usb_id,
     wifi_id,
 )
-from dirty.atomics.model import Kind
+from wifucked.atomics.model import Kind
 
 
 class TestWifiIdentity:

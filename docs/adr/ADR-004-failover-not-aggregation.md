@@ -20,7 +20,7 @@ neither of which exists yet.
 
 ## Decision
 
-**On the base hardware, DIRTY delivers seamless, session-preserving failover
+**On the base hardware, WI-FUCKED delivers seamless, session-preserving failover
 between WANs — not bandwidth aggregation.**
 
 Where genuine concurrency exists (a USB WAN alongside Wi-Fi), traffic is balanced

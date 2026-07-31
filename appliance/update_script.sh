@@ -9,14 +9,14 @@
 #
 set -euo pipefail
 
-log() { echo "[$(date -u +%FT%TZ)] dirty-update: $1"; }
+log() { echo "[$(date -u +%FT%TZ)] wifucked-update: $1"; }
 
 if [[ "${EUID}" -ne 0 ]]; then
     log "must run as root"
     exit 1
 fi
 
-BASE_DIR=/opt/dirty
+BASE_DIR=/opt/wifucked
 VERSIONS_DIR="${BASE_DIR}/versions"
 CURRENT="${BASE_DIR}/current"
 HEALTHY="${BASE_DIR}/healthy"
@@ -58,7 +58,7 @@ if [[ -d stage-custom ]]; then
     log "updating system configuration"
     cp -r stage-custom/etc/. /etc/
     cp -r stage-custom/opt/. /opt/
-    chmod 755 /opt/dirty/*.sh
+    chmod 755 /opt/wifucked/*.sh
     systemctl daemon-reload
 fi
 
@@ -82,6 +82,6 @@ rm -f "${HEALTHY}"
 # and their leases; the user experiences nothing.
 
 log "restarting control plane (AP untouched)"
-systemctl restart dirty.service || log "WARNING dirty.service restart failed"
+systemctl restart wifucked.service || log "WARNING wifucked.service restart failed"
 
 log "update to ${NEW_VERSION} applied"

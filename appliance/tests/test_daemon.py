@@ -11,15 +11,15 @@ import dataclasses
 
 import pytest
 
-from dirty.atomics.model import Atomic, Capacity, Kind, Mode
-from dirty.capacity import HistoricalHint, blend
-from dirty.clock import VirtualClock
-from dirty.config import Config, load
-from dirty.daemon import Daemon
-from dirty.demand import CounterDemand, StaticDemand
-from dirty.enforce import LinuxEnforcer, MockEnforcer
-from dirty.hal import build_hal
-from dirty.probe import (
+from wifucked.atomics.model import Atomic, Capacity, Kind, Mode
+from wifucked.capacity import HistoricalHint, blend
+from wifucked.clock import VirtualClock
+from wifucked.config import Config, load
+from wifucked.daemon import Daemon
+from wifucked.demand import CounterDemand, StaticDemand
+from wifucked.enforce import LinuxEnforcer, MockEnforcer
+from wifucked.hal import build_hal
+from wifucked.probe import (
     CONFIDENCE_HALF_LIFE_S,
     LinuxProber,
     Observation,
@@ -28,8 +28,8 @@ from dirty.probe import (
     fold,
     may_probe_actively,
 )
-from dirty.telemetry import Telemetry
-from dirty.tunnel import MockTunnel, WireGuardTunnel, fabric_compatible, version_tuple
+from wifucked.telemetry import Telemetry
+from wifucked.tunnel import MockTunnel, WireGuardTunnel, fabric_compatible, version_tuple
 
 
 @pytest.fixture
@@ -298,7 +298,7 @@ class TestConfig:
 class TestApi:
     @pytest.fixture
     def client(self, daemon):
-        from dirty.api import create_app
+        from wifucked.api import create_app
 
         daemon.start()
         daemon.tick()
@@ -338,7 +338,7 @@ class TestApi:
     def test_dashboard_renders(self, client):
         response = client.get("/")
         assert response.status_code == 200
-        assert b"DIRTY" in response.data
+        assert b"WI-FUCKED" in response.data
 
     def test_diagnostics_bundle_carries_no_credentials(self, client):
         """Safe to attach to an issue — keep it that way when extending it."""

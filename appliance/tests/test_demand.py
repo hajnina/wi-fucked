@@ -10,10 +10,10 @@ Runs without hardware: the mock HAL supplies the byte counters.
 
 from __future__ import annotations
 
-from dirty.clock import VirtualClock
-from dirty.demand import CounterDemand
-from dirty.lan import lan_ifname_for_profile
-from dirty.policy import BEST_EFFORT, CRITICAL, DEFAULT_PROFILES
+from wifucked.clock import VirtualClock
+from wifucked.demand import CounterDemand
+from wifucked.lan import lan_ifname_for_profile
+from wifucked.policy import BEST_EFFORT, CRITICAL, DEFAULT_PROFILES
 
 
 def _counter_demand(hal, clock, lan_mode="two_bss") -> CounterDemand:
@@ -23,7 +23,7 @@ def _counter_demand(hal, clock, lan_mode="two_bss") -> CounterDemand:
 class TestCounterDemand:
     def test_first_sample_reports_zero_for_every_class(self):
         """A rate needs two readings; the first only seeds the baseline."""
-        from dirty.hal.mock import build_mock_hal
+        from wifucked.hal.mock import build_mock_hal
 
         demand = _counter_demand(build_mock_hal(), VirtualClock())
         sample = demand.sample()
@@ -31,7 +31,7 @@ class TestCounterDemand:
         assert all(d.total_bps == 0 for d in sample.values())
 
     def test_rate_is_bytes_delta_over_elapsed_time(self):
-        from dirty.hal.mock import build_mock_hal
+        from wifucked.hal.mock import build_mock_hal
 
         hal, clock = build_mock_hal(), VirtualClock()
         demand = _counter_demand(hal, clock)
@@ -48,7 +48,7 @@ class TestCounterDemand:
         assert sample[BEST_EFFORT.name].total_bps == 0  # untouched interface
 
     def test_classes_read_from_their_own_interfaces(self):
-        from dirty.hal.mock import build_mock_hal
+        from wifucked.hal.mock import build_mock_hal
 
         hal, clock = build_mock_hal(), VirtualClock()
         demand = _counter_demand(hal, clock)
@@ -62,7 +62,7 @@ class TestCounterDemand:
         assert sample[CRITICAL.name].down_bps == 0
 
     def test_two_psk_mode_reads_the_shared_bss_interface(self):
-        from dirty.hal.mock import build_mock_hal
+        from wifucked.hal.mock import build_mock_hal
 
         hal, clock = build_mock_hal(), VirtualClock()
         demand = _counter_demand(hal, clock, lan_mode="two_psk")
@@ -77,7 +77,7 @@ class TestCounterDemand:
 
     def test_constrained_is_left_unset(self):
         """Inferring 'capped' from served rate is deliberately not attempted."""
-        from dirty.hal.mock import build_mock_hal
+        from wifucked.hal.mock import build_mock_hal
 
         hal, clock = build_mock_hal(), VirtualClock()
         demand = _counter_demand(hal, clock)
