@@ -33,6 +33,21 @@ suggestions. This file states the rules; the SOPs tell you how to work.
 | [SOP-009 Hardware and field debugging](docs/sop/SOP-009-hardware-and-field-debugging.md) | Works locally, not on a Pi |
 | [SOP-010 Keeping documentation current](docs/sop/SOP-010-keeping-documentation-current.md) | Continuously |
 
+## Active tests — code that runs for real, unconfirmed on real hardware
+
+[`docs/active-tests.md`](docs/active-tests.md) tracks behaviour that is merged,
+live, and will actually execute against real hardware, but that **nobody has yet
+watched work.** This is different from the radio spike: the spike gates code
+that hasn't been written yet; this tracks code that ships and runs anyway
+because the alternative — refusing to try it — never produces an answer.
+
+The rule: **do not silently trust an entry marked `UNCONFIRMED`.** Before
+building on top of one, or reporting it as working, ask the user whether they
+have actually run it on hardware and what happened. When a real result comes
+in — success or failure — update the entry in the same session. An SOP or ADR
+you don't update is bad; a test-status file you don't update is actively
+misleading, because it looks authoritative.
+
 **Three obligations, not optional:**
 
 1. **Follow them.** If an SOP is wrong for your situation, change it — do not
