@@ -20,7 +20,7 @@ loses not just Internet but the dashboard that would explain why.
 ## Decision
 
 **The AP is the anchor. `hostapd` and `dnsmasq` are independent systemd units with
-no dependency on `dirty.service`.**
+no dependency on `wifucked.service`.**
 
 - They start at boot, before and independently of the daemon.
 - They do not have `Requires=`, `BindsTo=`, or `PartOf=` pointing at the daemon.

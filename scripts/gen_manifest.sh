@@ -25,11 +25,11 @@ sha_of() { sha256sum "$1" | cut -d' ' -f1; }
 # The oldest version this package can upgrade *from*. Bump it when update.sh
 # stops being able to migrate an older layout, so an ancient device is told to
 # reflash rather than half-updating into a broken state.
-MIN_UPGRADABLE="${DIRTY_MIN_UPGRADABLE:-0.1.0}"
+MIN_UPGRADABLE="${WIFUCKED_MIN_UPGRADABLE:-0.1.0}"
 
 # The fabric protocol floor. An appliance refuses an older fabric rather than
 # failing mysteriously mid-tunnel (ADR-005).
-FABRIC_MIN="${DIRTY_FABRIC_MIN:-0.1.0}"
+FABRIC_MIN="${WIFUCKED_FABRIC_MIN:-0.1.0}"
 
 cat > "${OUTPUT}" <<EOF
 {

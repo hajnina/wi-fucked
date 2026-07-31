@@ -29,8 +29,8 @@ Names are constructible, so the OTA client never scrapes the API:
 
 | Asset | Contents |
 |---|---|
-| `dirty-<X.Y.Z>-arm64.img.zst` | Full SD image |
-| `dirty-<X.Y.Z>.wtf` | OTA update package |
+| `wifucked-<X.Y.Z>-arm64.img.zst` | Full SD image |
+| `wifucked-<X.Y.Z>.wtf` | OTA update package |
 | `manifest.json` | The one file the OTA client reads |
 | `SHA256SUMS` | Checksums for both artifacts |
 | `test-output.log` | The suite that gated this release |
@@ -66,9 +66,9 @@ check; if it false-positives, fix the pattern, and say so in the PR.
 
 The appliance and the fabric are two ends of one protocol and must stay compatible.
 
-- `DIRTY_FABRIC_MIN` in `/etc/dirty-release` is the protocol floor. An appliance
+- `WIFUCKED_FABRIC_MIN` in `/etc/wifucked-release` is the protocol floor. An appliance
   refuses to attach to an older fabric rather than failing mysteriously mid-tunnel.
-- Changing the protocol means `feat!:` **and** bumping `DIRTY_FABRIC_MIN` **and**
+- Changing the protocol means `feat!:` **and** bumping `WIFUCKED_FABRIC_MIN` **and**
   an ADR. All three, same PR.
 - Deploy the fabric before the appliance release reaches devices. A device that
   updates into a fabric that cannot serve it has no Internet, and no way to be told
@@ -101,7 +101,7 @@ Before merging anything that touches `update_script.sh`, `stage-custom/`,
 2. Flash a real Pi Zero 2W.
 3. Apply the update from the *previous* release, not from a clean image — upgrade
    is the path users take, and the one that breaks.
-4. Verify: AP stayed up, version advanced in `/etc/dirty-release`, daemon healthy.
+4. Verify: AP stayed up, version advanced in `/etc/wifucked-release`, daemon healthy.
 5. Deliberately break the health check and confirm the rollback fires.
 
 Record the result in the PR under Verification. "Tested OTA" without saying from

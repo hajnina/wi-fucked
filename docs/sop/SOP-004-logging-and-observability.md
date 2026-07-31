@@ -8,9 +8,9 @@ no repro, and an annoyed user.
 ## Always use `get_logger`
 
 ```python
-from dirty.logging import get_logger
+from wifucked.logging import get_logger
 
-log = get_logger("allocator")     # → dirty.allocator
+log = get_logger("allocator")     # → wifucked.allocator
 ```
 
 Never `logging.getLogger` directly. `get_logger` returns a `ResilientLogger` that
@@ -18,8 +18,8 @@ will not crash the application when an `extra` payload collides with a reserved
 `LogRecord` attribute (`name`, `msg`, `args`, `module`, …). A logging bug must
 never take down the network.
 
-Sub-loggers are rooted in `dirty` and named after the module: `dirty.discovery`,
-`dirty.enforce`, `dirty.radio`, `dirty.ota`.
+Sub-loggers are rooted in `wifucked` and named after the module: `wifucked.discovery`,
+`wifucked.enforce`, `wifucked.radio`, `wifucked.ota`.
 
 ## Required fields
 
@@ -162,7 +162,7 @@ The SD card is consumable and logging is the main thing that consumes it
 Read your own output before requesting review:
 
 ```bash
-MOCK_HW=1 DIRTY_SCENARIO=moving_van PYTHONPATH=appliance/src python3 -m dirty
+MOCK_HW=1 WIFUCKED_SCENARIO=moving_van PYTHONPATH=appliance/src python3 -m wifucked
 ```
 
 Ask the honest question: **if this had happened in the field and this were all I

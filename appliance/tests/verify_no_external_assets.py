@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 PATTERNS = (
-    re.compile(r"""https?://(?!localhost|127\.0\.0\.1|dirty\.local)""", re.I),
+    re.compile(r"""https?://(?!localhost|127\.0\.0\.1|wifucked\.local)""", re.I),
     re.compile(r"""(?:src|href)\s*=\s*["']//""", re.I),
     re.compile(r"""@import\s+url\(\s*["']?https?:""", re.I),
     re.compile(r"""fonts\.(?:googleapis|gstatic)\.com""", re.I),
@@ -67,7 +67,7 @@ def main(argv: list[str]) -> int:
         print(f"  {path}:{number}: {line}", file=sys.stderr)
     print(
         "\nThe dashboard must work with no Internet. Vendor the asset into "
-        "appliance/src/dirty/ui/static/ instead.",
+        "appliance/src/wifucked/ui/static/ instead.",
         file=sys.stderr,
     )
     return 1

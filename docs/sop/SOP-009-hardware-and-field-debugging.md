@@ -13,7 +13,7 @@ Check the cheap explanations first. In this system they are usually right.
 | Works, then degrades over days | SD card. `dmesg \| grep -i mmc`, filesystem errors. |
 | Interface missing after replug | Re-enumeration — is something keying off `ifname`? ([ADR-002](../adr/ADR-002-atomic-identity.md)) |
 | Throughput far below expectation | 2.4 GHz congestion. Are you in SHARED profile, splitting airtime? ([`../hardware.md`](../hardware.md)) |
-| AP unreachable but device up | `systemctl status hostapd` — it is independent of `dirty.service` by design, so check it independently. |
+| AP unreachable but device up | `systemctl status hostapd` — it is independent of `wifucked.service` by design, so check it independently. |
 
 ## The device tells you first
 
@@ -27,8 +27,8 @@ curl -s localhost:8080/api/state | jq
 curl -s localhost:8080/api/decisions?limit=50 | jq
 
 # Structured logs
-journalctl -u dirty -n 500 --no-pager
-journalctl -u dirty -n 500 -o json | jq 'select(.WORKFLOW=="backup_activation")'
+journalctl -u wifucked -n 500 --no-pager
+journalctl -u wifucked -n 500 -o json | jq 'select(.WORKFLOW=="backup_activation")'
 ```
 
 The decision journal exists precisely so that "why did it activate BACKUP?" is a
@@ -46,7 +46,7 @@ curl -s localhost:8080/api/diagnostics/bundle -o bundle.tar.gz
 
 Contains logs, decision journal, telemetry rollups, kernel network state
 (`tc qdisc show`, `nft list ruleset`, `ip rule`, `ip route show table all`),
-radio state, and `/etc/dirty-release`. **No credentials and no payload data** —
+radio state, and `/etc/wifucked-release`. **No credentials and no payload data** —
 it is safe to attach to an issue. Verify that stays true if you extend it.
 
 ## Inspecting kernel state

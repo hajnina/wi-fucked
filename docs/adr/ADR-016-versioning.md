@@ -44,7 +44,7 @@ version is not a nicety.
   published.
 
 Assets carry constructible names, so the OTA client never scrapes the API.
-`DIRTY_FABRIC_MIN` in `/etc/dirty-release` records the protocol floor: an appliance
+`WIFUCKED_FABRIC_MIN` in `/etc/wifucked-release` records the protocol floor: an appliance
 refuses an older fabric rather than failing mysteriously mid-tunnel
 ([ADR-005](ADR-005-tunnel-is-mandatory.md)).
 
@@ -87,5 +87,5 @@ on remembering, and gets forgotten during exactly the rushed merges where the
 version matters most.
 
 **Date-based versioning (`2026.07.30`)** — unambiguous and easy to generate, but
-carries no compatibility information. `DIRTY_FABRIC_MIN` needs a comparable
+carries no compatibility information. `WIFUCKED_FABRIC_MIN` needs a comparable
 ordering with meaning, which SemVer provides and dates do not.

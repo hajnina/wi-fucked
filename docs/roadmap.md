@@ -32,7 +32,7 @@ ADRs.
 ### In parallel
 
 - Repo skeleton, `CLAUDE.md`, SOPs, ADRs, docs
-- `dirty` daemon starts, logs, serves a dashboard that honestly says "no atomics"
+- `wifucked` daemon starts, logs, serves a dashboard that honestly says "no atomics"
 - `MOCK_HW=1` runs the full control loop on a laptop
 - The scenario harness exists — so Phase 1 has a target to build against, not an
   afterthought

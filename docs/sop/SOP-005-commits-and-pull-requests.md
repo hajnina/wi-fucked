@@ -35,7 +35,7 @@ Not "a big change." It means one of:
 
 - The OTA package cannot be applied to the previous version.
 - The fabric protocol changed — an appliance and fabric at adjacent versions can
-  no longer talk (bump `DIRTY_FABRIC_MIN`).
+  no longer talk (bump `WIFUCKED_FABRIC_MIN`).
 - A user's stored configuration needs migration.
 - A user-facing behaviour they relied on is gone.
 

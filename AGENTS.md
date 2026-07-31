@@ -15,7 +15,7 @@ deliberately does not restate the rules.
 
 Enough to orient; not enough to work from.
 
-- **DIRTY → BALANCED** is an autonomous connectivity appliance on a Raspberry Pi
+- **WI-FUCKED → BALANCED** is an autonomous connectivity appliance on a Raspberry Pi
   Zero 2W. It turns chaotic WAN connectivity into two LAN networks that never go
   away.
 - **The control plane is Python; the data plane is the kernel.** No packet is ever
@@ -25,7 +25,7 @@ Enough to orient; not enough to work from.
 - **`MOCK_HW=1` is the primary development path.** Nothing requires a Pi to test.
 
 ```bash
-MOCK_HW=1 PYTHONPATH=appliance/src python3 -m dirty     # run it
+MOCK_HW=1 PYTHONPATH=appliance/src python3 -m wifucked     # run it
 ./run_all_tests.sh                                      # test it
 ```
 

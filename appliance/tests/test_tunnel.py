@@ -1,13 +1,13 @@
 """WireGuardTunnel: dump parsing, status derivation, and path rebinding.
 
-No real WireGuard or root: `dirty.tunnel._run` (the only thing that shells out)
+No real WireGuard or root: `wifucked.tunnel._run` (the only thing that shells out)
 is monkeypatched with a scripted responder, the same seam hal/linux.py uses.
 """
 
 from __future__ import annotations
 
-import dirty.tunnel as tunnel_mod
-from dirty.tunnel import (
+import wifucked.tunnel as tunnel_mod
+from wifucked.tunnel import (
     FabricServer,
     TunnelState,
     WireGuardTunnel,
@@ -247,9 +247,9 @@ def test_attach_succeeds_and_configures_the_interface(monkeypatch, tmp_path):
             ),
         },
     )
-    pub_key_file = tmp_path / "dirty-publickey"
+    pub_key_file = tmp_path / "wifucked-publickey"
     pub_key_file.write_text("DEVICEKEY=\n")
-    priv_key_file = tmp_path / "dirty-privatekey"
+    priv_key_file = tmp_path / "wifucked-privatekey"
 
     responder = _Responder(
         {
@@ -301,7 +301,7 @@ def test_attach_fails_on_register_error_response(monkeypatch, tmp_path):
             "/register": ({"error": "tunnel address pool exhausted"}, 503),
         },
     )
-    pub_key_file = tmp_path / "dirty-publickey"
+    pub_key_file = tmp_path / "wifucked-publickey"
     pub_key_file.write_text("DEVICEKEY=\n")
     tun = WireGuardTunnel(fabric_min="0.1.0")
     assert tun.attach("https://fabric.invalid", public_key_path=pub_key_file) is False

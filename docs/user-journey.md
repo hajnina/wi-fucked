@@ -4,7 +4,7 @@ From unboxing to long-term maintenance. Every step here is a product requirement
 not an illustration — if the implementation makes one of these worse, that is a
 regression.
 
-The user's mental model must stay: *I have some Internet connections. DIRTY makes
+The user's mental model must stay: *I have some Internet connections. WI-FUCKED makes
 them work.*
 
 ---
@@ -84,7 +84,7 @@ The user does nothing. WANs come and go. The appliance rebalances.
 The dashboard lives at two stable addresses, both of which always work:
 
 ```
-http://dirty.local      (mDNS)
+http://wifucked.local      (mDNS)
 http://10.44.0.1        (always, even when mDNS doesn't)
 ```
 

@@ -12,12 +12,12 @@ stats, and ``ping`` is replaced by a stubbed ``_run``.
 
 from __future__ import annotations
 
-import dirty.probe as probe_module
-from dirty.atomics.model import Atomic, Kind, Mode
-from dirty.clock import VirtualClock
-from dirty.hal.linux import _parse_qdisc_stats
-from dirty.hal.mock import build_mock_hal
-from dirty.probe import LinuxProber, PassiveProber, PingResult, _parse_ping
+import wifucked.probe as probe_module
+from wifucked.atomics.model import Atomic, Kind, Mode
+from wifucked.clock import VirtualClock
+from wifucked.hal.linux import _parse_qdisc_stats
+from wifucked.hal.mock import build_mock_hal
+from wifucked.probe import LinuxProber, PassiveProber, PingResult, _parse_ping
 
 WLAN = "wlan0"
 

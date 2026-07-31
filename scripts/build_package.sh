@@ -20,15 +20,15 @@ mkdir -p "$(dirname "${OUTPUT}")"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPLIANCE="${REPO_ROOT}/appliance"
 
-if [[ ! -d "${APPLIANCE}/src/dirty" ]]; then
-    echo "error: cannot find appliance/src/dirty under ${REPO_ROOT}" >&2
+if [[ ! -d "${APPLIANCE}/src/wifucked" ]]; then
+    echo "error: cannot find appliance/src/wifucked under ${REPO_ROOT}" >&2
     exit 1
 fi
 
 STAGING="$(mktemp -d)"
 trap 'rm -rf "${STAGING}"' EXIT
 
-echo "Building dirty ${VERSION} -> ${OUTPUT}"
+echo "Building wifucked ${VERSION} -> ${OUTPUT}"
 
 # 1. Application code.
 ( cd "${APPLIANCE}" && zip -qr "${STAGING}/APP.zip" src/ \

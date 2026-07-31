@@ -17,7 +17,7 @@ git clone https://github.com/hajnina/wi-fucked.git
 cd wi-fucked
 pip install -r appliance/requirements.txt -r appliance/requirements-dev.txt
 
-MOCK_HW=1 PYTHONPATH=appliance/src python3 -m dirty     # dashboard on :8080
+MOCK_HW=1 PYTHONPATH=appliance/src python3 -m wifucked     # dashboard on :8080
 ./run_all_tests.sh
 ```
 

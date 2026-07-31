@@ -12,7 +12,7 @@ tunnel-address allocation and adding the appliance as a peer on ``wg0``.
 __version__ = "0.0.0-dev"
 
 #: The oldest appliance this fabric can serve. An appliance below its own
-#: DIRTY_FABRIC_MIN refuses to attach rather than failing mid-tunnel, and this
+#: WIFUCKED_FABRIC_MIN refuses to attach rather than failing mid-tunnel, and this
 #: is the mirror of that check.
 MIN_APPLIANCE_VERSION = "0.1.0"
 

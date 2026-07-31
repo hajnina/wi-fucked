@@ -17,7 +17,7 @@ locally and fails in the field. Check against [`../adr/`](../adr/):
 - `ifname` stored or compared as identity? → [ADR-002](../adr/ADR-002-atomic-identity.md)
 - Active probing on a `BACKUP` atomic? → [ADR-003](../adr/ADR-003-passive-capacity-estimation.md)
 - Cleanup path that flushes kernel state? → [ADR-008](../adr/ADR-008-fail-to-last-known-good.md)
-- Anything making the SSIDs depend on `dirty.service`? → [ADR-011](../adr/ADR-011-ap-is-the-anchor.md)
+- Anything making the SSIDs depend on `wifucked.service`? → [ADR-011](../adr/ADR-011-ap-is-the-anchor.md)
 - SSID or BSSID computed anywhere but first boot? → [ADR-012](../adr/ADR-012-immutable-ssid.md)
 
 If the change *should* contradict an ADR, that is fine — it needs a superseding

@@ -46,7 +46,7 @@ described seems to require hardware, that is a design problem to solve now — a
 the HAL seam — not a constraint to accept.
 
 ```bash
-MOCK_HW=1 PYTHONPATH=appliance/src python3 -m dirty
+MOCK_HW=1 PYTHONPATH=appliance/src python3 -m wifucked
 ```
 
 ## 5. Branch

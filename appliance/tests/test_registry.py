@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from dirty.atomics import Atomic, Capacity, Health, Kind, Mode, Registry
-from dirty.clock import VirtualClock
+from wifucked.atomics import Atomic, Capacity, Health, Kind, Mode, Registry
+from wifucked.clock import VirtualClock
 
 
 def _atomic(atomic_id: str = "wifi:hotel", **kwargs) -> Atomic:

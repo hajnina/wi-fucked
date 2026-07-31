@@ -10,7 +10,7 @@ This is the Phase 1 exit criterion, expressed as a test.
 
 from __future__ import annotations
 
-from dirty.atomics.model import Kind, Mode
+from wifucked.atomics.model import Kind, Mode
 
 from .conftest import assert_invariants
 

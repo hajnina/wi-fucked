@@ -36,7 +36,7 @@ that reaches `master` and drives the version.
 **"Breaking" has a specific meaning here**, and it is not "a big change":
 
 - The OTA package cannot be applied to the previous version.
-- The fabric protocol changed — bump `DIRTY_FABRIC_MIN` too.
+- The fabric protocol changed — bump `WIFUCKED_FABRIC_MIN` too.
 - Stored user configuration needs migration.
 - A user-facing behaviour they relied on is gone.
 

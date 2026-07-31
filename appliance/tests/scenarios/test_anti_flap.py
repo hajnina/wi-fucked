@@ -10,7 +10,7 @@ Any change to activation or recovery thresholds needs a test here
 
 from __future__ import annotations
 
-from dirty.atomics.model import Kind, Mode
+from wifucked.atomics.model import Kind, Mode
 
 from .conftest import assert_invariants
 

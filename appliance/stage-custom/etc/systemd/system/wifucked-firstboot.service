@@ -1,0 +1,15 @@
+# Derives LAN identity from the Pi serial, exactly once (ADR-012).
+
+[Unit]
+Description=WI-FUCKED first-boot identity generation
+Before=hostapd.service dnsmasq.service
+After=local-fs.target
+ConditionPathExists=!/var/lib/wifucked/.identity-generated
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/wifucked/firstboot.sh
+
+[Install]
+WantedBy=multi-user.target

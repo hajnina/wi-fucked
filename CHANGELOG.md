@@ -56,7 +56,7 @@
 - document a self-checked CI wait-loop for PR ownership
 - schedule PR ownership checks
 - TODO with the CI workflows bundled for manual install
-- architecture, ADRs, SOPs and roadmap for DIRTY -> BALANCED
+- architecture, ADRs, SOPs and roadmap for WI-FUCKED -> BALANCED
 
 ### test
 - scenario harness enforcing the two product invariants

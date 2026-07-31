@@ -1,9 +1,9 @@
-# Wi-Fucked — DIRTY → BALANCED
+# Wi-Fucked → BALANCED
 
 > Is you wifi fucked? **DEAL WITH IT.**
 
 An autonomous connectivity appliance for a Raspberry Pi Zero 2W. Plug in whatever
-Internet you have — hotel Wi-Fi, a phone on USB, a campsite hotspot — and DIRTY
+Internet you have — hotel Wi-Fi, a phone on USB, a campsite hotspot — and WI-FUCKED
 figures out how to make it feel stable.
 
 ```
@@ -12,7 +12,7 @@ figures out how to make it feel stable.
            ▼           ▼        ▼
         unreliable / changing / expensive
                        │
-                    DIRTY          "I'll figure this out."
+                    WI-FUCKED          "I'll figure this out."
                        │
                     BALANCED
                        │
@@ -57,7 +57,7 @@ interfaces with mock implementations. See [`docs/roadmap.md`](docs/roadmap.md).
 
 ```bash
 pip install -r appliance/requirements.txt
-MOCK_HW=1 PYTHONPATH=appliance/src python3 -m dirty
+MOCK_HW=1 PYTHONPATH=appliance/src python3 -m wifucked
 ```
 
 Dashboard on <http://localhost:8080>. The mock HAL presents three fake atomics so
@@ -71,7 +71,7 @@ the whole control loop runs on a laptop.
 
 | Path | Contents |
 |---|---|
-| `appliance/` | What runs on the Pi — the `dirty` daemon, provisioning, systemd units |
+| `appliance/` | What runs on the Pi — the `wifucked` daemon, provisioning, systemd units |
 | `fabric/` | The remote tunnel endpoint, shipped as a container |
 | `scripts/` | Version calculation, update-package builder, manifest generation |
 | `docs/` | Architecture, ADRs, roadmap, hardware envelope, user journey |

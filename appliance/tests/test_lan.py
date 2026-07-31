@@ -8,15 +8,15 @@ are reflashed rather than rebooted.
 
 from __future__ import annotations
 
-from dirty.config import LanConfig
-from dirty.lan import (
+from wifucked.config import LanConfig
+from wifucked.lan import (
     derive_identity,
     dnsmasq_config,
     hostapd_config,
     lan_ifname_for_profile,
     wpa_psk_file,
 )
-from dirty.policy import BEST_EFFORT, CRITICAL, DEFAULT_PROFILES
+from wifucked.policy import BEST_EFFORT, CRITICAL, DEFAULT_PROFILES
 
 SERIAL = "10000000deadbeef"
 

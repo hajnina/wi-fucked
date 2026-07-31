@@ -1,6 +1,6 @@
 [project]
-name = "dirty"
-description = "DIRTY -> BALANCED: an autonomous connectivity appliance"
+name = "wifucked"
+description = "WI-FUCKED -> BALANCED: an autonomous connectivity appliance"
 requires-python = ">=3.11"
 dynamic = ["version"]
 
@@ -38,4 +38,4 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["appliance/tests", "fabric/tests"]
 pythonpath = ["appliance/src", "fabric/src"]
-filterwarnings = ["error::DeprecationWarning:dirty.*"]
+filterwarnings = ["error::DeprecationWarning:wifucked.*"]
