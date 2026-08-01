@@ -22,6 +22,14 @@ runs:
         echo "Docker not available — installing."
         curl -fsSL https://get.docker.com | sh
 
+        # This runner's own root filesystem is already overlayfs (a container
+        # inside a kind node, itself containerd-on-overlayfs) — overlay2 can't
+        # mount on top of overlay2 ("failed to mount ...: invalid argument").
+        # vfs has no such restriction; slower image layer handling, but it's
+        # the only driver guaranteed to work regardless of the host under it.
+        sudo mkdir -p /etc/docker
+        echo '{"storage-driver": "vfs"}' | sudo tee /etc/docker/daemon.json > /dev/null
+
         sudo dockerd > /tmp/dockerd.log 2>&1 &
         for _ in $(seq 1 30); do
           docker info >/dev/null 2>&1 && break
