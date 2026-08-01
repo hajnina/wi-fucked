@@ -34,8 +34,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Picks self-hosted (this laptop's arc-runner-set) when its heartbeat is
+  # fresh, GitHub-hosted otherwise — see select-runner.yml.
+  pick-runner:
+    uses: ./.github/workflows/select-runner.yml
+
   version:
-    runs-on: ubuntu-24.04
+    needs: pick-runner
+    runs-on: ${{ fromJSON(needs.pick-runner.outputs.labels) }}
     outputs:
       version: ${{ steps.next.outputs.version }}
       tag: ${{ steps.next.outputs.tag }}
@@ -76,7 +82,8 @@ jobs:
   # Tests gate publish. Gutiva skips its suite on pushes to a release branch,
   # which means the branch devices follow is the one that was never tested.
   test:
-    runs-on: ubuntu-24.04
+    needs: pick-runner
+    runs-on: ${{ fromJSON(needs.pick-runner.outputs.labels) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -90,7 +97,7 @@ jobs:
           path: test-output.log
 
   bake:
-    needs: [version, test]
+    needs: [version, test, pick-runner]
     uses: ./.github/workflows/reusable_image_pipeline.yml
     permissions:
       contents: write
@@ -101,16 +108,12 @@ jobs:
       # Releases are downloaded once and flashed; spending the extra minutes is
       # worth it for every user's download.
       compression_level: 19
-      # No self-hosted ARM64 runner is registered. Without this the job falls
-      # back to the reusable workflow's default self-hosted label set and
-      # queues forever waiting for a runner that doesn't exist — same fix the
-      # PR pipeline (ci.yml) already applies.
-      runner_labels: '["ubuntu-24.04-arm"]'
+      runner_labels: ${{ needs.pick-runner.outputs.labels_arm }}
 
   changelog:
-    needs: [version, bake]
+    needs: [version, bake, pick-runner]
     if: ${{ fromJSON(needs.version.outputs.publish) }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.pick-runner.outputs.labels) }}
     steps:
       - uses: actions/checkout@v4
         with:

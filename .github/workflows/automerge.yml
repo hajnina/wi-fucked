@@ -22,9 +22,15 @@ permissions:
   pull-requests: write
 
 jobs:
+  # Picks self-hosted (this laptop's arc-runner-set) when its heartbeat is
+  # fresh, GitHub-hosted otherwise — see select-runner.yml.
+  pick-runner:
+    uses: ./.github/workflows/select-runner.yml
+
   automerge:
+    needs: pick-runner
     if: github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.pick-runner.outputs.labels) }}
     steps:
       - name: Find the PR this run belongs to
         id: pr

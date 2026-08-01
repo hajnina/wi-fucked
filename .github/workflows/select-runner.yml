@@ -1,0 +1,51 @@
+# Picks self-hosted (arc-runner-set, an ephemeral ARC scale set) when it's
+# alive, GitHub-hosted otherwise. The laptop this runs on isn't up 24/7, so we
+# can't just point runs-on at self-hosted labels and hope — a queued job with
+# no matching runner just sits there.
+#
+# Detection: a Kubernetes CronJob inside the cluster PATCHes the
+# SELF_HOSTED_ARM64_HEARTBEAT repo variable with the current epoch time every
+# 2 minutes. If it's fresh, self-hosted is up. Labels are the generic
+# self-hosted/Linux/ARM64 triplet, not the arc-runner-set name, so any arm64
+# self-hosted runner registered to this repo (this laptop today, something
+# else later) is picked up without editing these workflows again.
+
+name: Select Runner
+
+on:
+  workflow_call:
+    outputs:
+      labels:
+        description: 'JSON array of runs-on labels for general-purpose jobs'
+        value: ${{ jobs.select.outputs.labels }}
+      labels_arm:
+        description: 'JSON array of runs-on labels for jobs that need arm64 (the Pi image bake)'
+        value: ${{ jobs.select.outputs.labels_arm }}
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      labels: ${{ steps.pick.outputs.labels }}
+      labels_arm: ${{ steps.pick.outputs.labels_arm }}
+    steps:
+      - name: Pick self-hosted or GitHub-hosted
+        id: pick
+        env:
+          HEARTBEAT: ${{ vars.SELF_HOSTED_ARM64_HEARTBEAT }}
+        run: |
+          set -euo pipefail
+          now=$(date -u +%s)
+          age=$(( now - ${HEARTBEAT:-0} ))
+
+          # Heartbeat every 2 minutes; 360s tolerates two missed beats before
+          # calling it offline.
+          if [ "${age}" -lt 360 ]; then
+            echo "Self-hosted heartbeat is ${age}s old — using self-hosted."
+            echo 'labels=["self-hosted","Linux","ARM64"]' >> "$GITHUB_OUTPUT"
+            echo 'labels_arm=["self-hosted","Linux","ARM64"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "Self-hosted heartbeat is ${age}s old — falling back to GitHub-hosted."
+            echo 'labels=["ubuntu-24.04"]' >> "$GITHUB_OUTPUT"
+            echo 'labels_arm=["ubuntu-24.04-arm"]' >> "$GITHUB_OUTPUT"
+          fi
