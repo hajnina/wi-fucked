@@ -85,7 +85,10 @@ jobs:
       - run: pip install --quiet -r appliance/requirements-dev.txt
       # build_package.sh shells out to zip/unzip; not every runner has them.
       - name: Ensure zip/unzip
-        run: command -v zip >/dev/null && command -v unzip >/dev/null || (sudo apt-get update && sudo apt-get install -y zip unzip)
+        run: |
+          if ! command -v zip >/dev/null || ! command -v unzip >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y zip unzip
+          fi
       - run: ./run_all_tests.sh 2>&1 | tee test-output.log
       - uses: actions/upload-artifact@v4
         with:

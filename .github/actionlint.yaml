@@ -1,0 +1,6 @@
+self-hosted-runner:
+  # arc-runner-set is the ARC scale-set name every job in this repo targets
+  # (runs-on: arc-runner-set). See CLAUDE.md at the repo root of gh-runners
+  # for how the scale set is deployed.
+  labels:
+    - arc-runner-set

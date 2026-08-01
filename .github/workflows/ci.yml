@@ -94,7 +94,10 @@ jobs:
 
       # build_package.sh shells out to zip/unzip; not every runner has them.
       - name: Ensure zip/unzip
-        run: command -v zip >/dev/null && command -v unzip >/dev/null || (sudo apt-get update && sudo apt-get install -y zip unzip)
+        run: |
+          if ! command -v zip >/dev/null || ! command -v unzip >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y zip unzip
+          fi
 
       # No hardware anywhere in the suite. A test that needs a Pi is a design
       # problem, not a constraint (SOP-003).
