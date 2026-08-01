@@ -72,6 +72,11 @@ jobs:
           sudo apt-get update && sudo apt-get install -y shellcheck
           shellcheck appliance/*.sh scripts/*.sh appliance/stage-custom/opt/wifucked/*.sh fabric/*.sh
 
+      # actionlint is a Docker container action — needs a daemon on whatever
+      # runner picks this job up.
+      - name: Ensure Docker
+        uses: ./.github/actions/ensure-docker
+
       - name: Actionlint
         uses: reviewdog/action-actionlint@v1
         with:
@@ -88,6 +93,10 @@ jobs:
 
       - name: Install dependencies
         run: pip install --quiet -r appliance/requirements-dev.txt
+
+      # build_package.sh shells out to zip/unzip; not every runner has them.
+      - name: Ensure zip/unzip
+        run: command -v zip >/dev/null && command -v unzip >/dev/null || (sudo apt-get update && sudo apt-get install -y zip unzip)
 
       # No hardware anywhere in the suite. A test that needs a Pi is a design
       # problem, not a constraint (SOP-003).

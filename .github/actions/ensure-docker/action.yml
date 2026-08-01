@@ -1,0 +1,34 @@
+# Jobs bring their own toolbox rather than depending on whatever a given
+# runner happens to have pre-installed — this composite action is that
+# toolbox for Docker specifically. Works whether the runner already has
+# Docker (GitHub-hosted, most self-hosted setups) or needs it installed on
+# the spot (a bare self-hosted runner with nothing pre-baked).
+
+name: Ensure Docker
+description: Installs and starts Docker if it isn't already available.
+
+runs:
+  using: composite
+  steps:
+    - name: Ensure Docker is available
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+          echo "Docker already available."
+          exit 0
+        fi
+
+        echo "Docker not available — installing."
+        curl -fsSL https://get.docker.com | sh
+
+        sudo dockerd > /tmp/dockerd.log 2>&1 &
+        for _ in $(seq 1 30); do
+          docker info >/dev/null 2>&1 && break
+          sleep 1
+        done
+        docker info >/dev/null 2>&1 || {
+          echo "::error::Docker daemon failed to start"
+          cat /tmp/dockerd.log
+          exit 1
+        }

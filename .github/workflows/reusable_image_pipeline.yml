@@ -74,6 +74,9 @@ jobs:
       - name: Airgap gate
         run: python3 appliance/tests/verify_no_external_assets.py appliance
 
+      - name: Ensure Docker
+        uses: ./.github/actions/ensure-docker
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -312,7 +315,12 @@ jobs:
 
   fabric:
     # Two ends of one protocol: they ship together, at the same version.
-    runs-on: ubuntu-24.04
+    #
+    # Built for both amd64 and arm64 deliberately: the tunnel endpoint runs
+    # wherever the cloud side is hosted (typically amd64), and this pipeline
+    # itself may now run on an arm64 self-hosted runner — the image's
+    # architecture must never be an accident of what built it.
+    runs-on: arc-runner-set
     permissions:
       contents: read
       packages: write
@@ -325,6 +333,9 @@ jobs:
         id: repo
         run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
+      - name: Ensure Docker
+        uses: ./.github/actions/ensure-docker
+
       - name: Log in to GHCR
         if: ${{ inputs.publish }}
         uses: docker/login-action@v3
@@ -332,6 +343,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Needed to cross-build for a platform other than the runner's own arch.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       # The default "docker" driver can't export a GHA cache; docker-container
       # can. Without this, cache-to below fails the build outright.
@@ -344,6 +359,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: fabric
+          platforms: linux/amd64,linux/arm64
           push: ${{ inputs.publish }}
           tags: ghcr.io/${{ steps.repo.outputs.name }}/fabric:${{ inputs.version }}
           cache-from: type=gha
