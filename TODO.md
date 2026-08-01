@@ -4,6 +4,24 @@ Handover items that need a human. Delete each entry once it's done.
 
 ---
 
+## 2. Remove the temporary HDMI bring-up console — **before any real release**
+
+`wifucked-console.service` / `appliance/stage-custom/opt/wifucked/hdmi_console.sh`
+were added to debug why the first real-hardware boots produced no AP and no
+observable failure (no journal persistence, no console). They are explicitly
+marked temporary in every file they touch (`setup_rpi.sh`, the unit itself)
+because they trade away two things this project protects on purpose: SD card
+survival (continuous writes/streaming to disk and tty1) and the "ACT LED is
+the only status channel" design (`docs/hardware.md`) — a shipped device has
+no monitor attached.
+
+Delete `wifucked-console.service`, `hdmi_console.sh`, the verbose-boot
+`cmdline.txt` edit, and the `tee`/`exec >>` persistent-log lines in
+`firstboot.sh`/`bootcount.sh` once devices are booting and reachable
+reliably enough that this isn't needed to see what's happening.
+
+---
+
 ## 3. Run the radio capability spike — **blocks the LAN design**
 
 **This is task zero of Phase 0.** See [`docs/radio-spike.md`](docs/radio-spike.md)
