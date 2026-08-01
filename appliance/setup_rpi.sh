@@ -50,6 +50,20 @@ systemctl enable wifucked-bootcount.service
 systemctl enable wifucked.service
 systemctl enable wifucked-watchdog.timer
 
+# TEMPORARY, DESTRUCTIVE, bring-up only — see wifucked-console.service and
+# hdmi_console.sh. This exists because the first real-hardware boots have
+# been failing with no way to observe why (no AP, no console). It trades
+# away two things this project otherwise protects on purpose:
+#   - the SD card survival story (ADR-010, docs/hardware.md): this puts a
+#     live log stream on tty1 and persistent boot logs on disk, which is
+#     exactly the continuous-write pattern that architecture exists to avoid.
+#   - the "ACT LED is the only status channel" design (docs/hardware.md):
+#     this assumes a monitor is attached, which a shipped device will not
+#     have.
+# DELETE this unit once devices boot reliably and reachably. Do not let it
+# reach a "production" image.
+systemctl enable wifucked-console.service
+
 # NetworkManager must not manage the AP interface or fight us over the WAN
 # routes we install.
 mkdir -p /etc/NetworkManager/conf.d
@@ -60,6 +74,37 @@ dns=none
 [keyfile]
 unmanaged-devices=interface-name:ap0;interface-name:wg0
 EOF
+
+# --- USB OTG host mode -------------------------------------------------------
+#
+# The single micro-USB port is the primary non-Wi-Fi WAN (docs/hardware.md) —
+# phone tethering, a USB Ethernet dongle. It must always come up as a USB
+# *host* so it can enumerate whatever is plugged in. Left to the dwc2
+# controller's default ID-pin sensing, role negotiation is not reliable across
+# every cable/adapter combination: the port can come up not requesting the
+# host role, in which case a phone just charges and never sees a data
+# connection. This is never a gadget port on this hardware, so force host mode
+# unconditionally rather than trust auto-negotiation.
+echo "--- forcing USB OTG host mode"
+cat >> /boot/config.txt <<'EOF'
+
+# WI-FUCKED: the OTG port is always a USB host (tethering/USB-Ethernet WAN),
+# never a gadget. Do not rely on ID-pin auto-negotiation for this.
+dtoverlay=dwc2,dr_mode=host
+EOF
+
+# --- TEMPORARY: verbose boot on HDMI -----------------------------------------
+#
+# See wifucked-console.service. `quiet`/`splash`/a low loglevel hide exactly
+# the kernel and systemd messages that matter while chasing a boot that
+# produces no AP and no visible failure. DELETE this block along with that
+# unit once bring-up is done — a shipped device should boot quietly.
+echo "--- enabling verbose boot output"
+if [ -f /boot/cmdline.txt ]; then
+    sed -i -E 's/\bquiet\b//g; s/\bsplash\b//g; s/\bloglevel=[0-9]+\b//g' /boot/cmdline.txt
+    sed -i -E 's/[[:space:]]+/ /g; s/^ +//; s/ +$//' /boot/cmdline.txt
+    grep -q '\bconsole=tty1\b' /boot/cmdline.txt || sed -i 's/$/ console=tty1/' /boot/cmdline.txt
+fi
 
 # --- forwarding -------------------------------------------------------------
 

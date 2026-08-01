@@ -12,6 +12,10 @@
 #
 set -euo pipefail
 
+# Same rationale as firstboot.sh: journald is volatile on this image, so a
+# power cycle loses this script's output unless it lands on disk itself.
+exec >> /var/log/wifucked-boot.log 2>&1
+
 STATE_DIR=/var/lib/wifucked
 COUNTER="${STATE_DIR}/.bootcount"
 THRESHOLD=3

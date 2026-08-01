@@ -13,6 +13,14 @@
 #
 set -euo pipefail
 
+# journald is RAM-only on this image (Storage=volatile, setup_rpi.sh) to
+# protect the SD card from wear, so a failure here leaves nothing to read
+# once the device is power-cycled — exactly the case where there is no
+# console yet either. Mirror the bake log's pattern: a small, persistent,
+# on-disk record that survives a reboot and can be read by pulling the SD
+# card, without needing the daemon, the AP, or a live console.
+exec > >(tee -a /var/log/wifucked-boot.log) 2>&1
+
 SENTINEL=/var/lib/wifucked/.identity-generated
 STATE_DIR=/var/lib/wifucked
 

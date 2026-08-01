@@ -1,0 +1,27 @@
+# TEMPORARY. Bring-up debugging aid only — DELETE this unit (and
+# hdmi_console.sh) once devices are booting and reachable reliably.
+#
+# Puts a live status snapshot plus a streaming journal tail on the physical
+# HDMI console (docs/hardware.md documents the ACT LED as the product's only
+# status channel — this unit deliberately breaks that for bring-up, on
+# hardware where the network/AP path is not yet trustworthy enough to debug
+# any other way). It takes over tty1; a login shell is still reachable by
+# switching to tty2 (Ctrl+Alt+F2), which autospawns getty on demand.
+
+[Unit]
+Description=TEMPORARY — HDMI live status/log console for hardware bring-up
+After=multi-user.target
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+ExecStart=/opt/wifucked/hdmi_console.sh
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

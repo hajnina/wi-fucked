@@ -31,6 +31,29 @@ journalctl -u wifucked -n 500 --no-pager
 journalctl -u wifucked -n 500 -o json | jq 'select(.WORKFLOW=="backup_activation")'
 ```
 
+`journalctl` is RAM-only on this image (`Storage=volatile` in `setup_rpi.sh`, to
+protect the SD card) — it is lost the moment the device is power-cycled, which is
+often exactly when you'd want it, and it says nothing about a boot early enough
+that the daemon or a console isn't up yet. `wifucked-firstboot` and
+`wifucked-bootcount` write their own output to a persistent file for that reason:
+
+```bash
+cat /var/log/wifucked-boot.log
+```
+
+Because it is on disk, this also survives a device you cannot get a console on at
+all: pull the SD card, mount its root partition on another machine, and read it
+directly.
+
+There is also, for now, `wifucked-console.service` — a live status snapshot plus
+a streaming `journalctl -f` pushed to the HDMI output on `tty1`, for a device
+whose network/AP path can't yet be trusted enough to debug any other way. This is
+**temporary bring-up scaffolding, not a supported diagnostic surface** — it
+trades away SD card survival (ADR-010) and the "ACT LED is the only status
+channel" design in the same way the persistent boot log above does, just more so
+(continuous writes, a monitor a shipped device won't have). See `TODO.md` item 2
+for what removes it and when.
+
 The decision journal exists precisely so that "why did it activate BACKUP?" is a
 lookup rather than an investigation ([ADR-009](../adr/ADR-009-decision-records.md)).
 If it does not answer the question, that is a logging defect worth fixing in the
