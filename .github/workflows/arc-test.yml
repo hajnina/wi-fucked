@@ -1,0 +1,13 @@
+name: ARC Test Workflow
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: arc-runner-set
+    steps:
+      - name: Hello from ARC runner
+        run: |
+          echo "This runs on an ephemeral ARC runner!"
+          echo "Hostname: $(hostname)"
+          echo "Runner OS: $(uname -a)"
