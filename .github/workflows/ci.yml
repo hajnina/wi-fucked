@@ -15,16 +15,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Picks self-hosted (this laptop's arc-runner-set) when its heartbeat is
-  # fresh, GitHub-hosted otherwise — see select-runner.yml.
-  pick-runner:
-    uses: ./.github/workflows/select-runner.yml
-
   # Runs first and fails fast. The release version is derived from commit
   # subjects, so a malformed one silently mis-versions a release (ADR-017).
   commitlint:
-    needs: pick-runner
-    runs-on: ${{ fromJSON(needs.pick-runner.outputs.labels) }}
+    runs-on: arc-runner-set
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
@@ -57,8 +51,7 @@ jobs:
           echo "All commit subjects are conventional."
 
   lint:
-    needs: pick-runner
-    runs-on: ${{ fromJSON(needs.pick-runner.outputs.labels) }}
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
 
@@ -85,8 +78,7 @@ jobs:
           fail_level: error
 
   test:
-    needs: pick-runner
-    runs-on: ${{ fromJSON(needs.pick-runner.outputs.labels) }}
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
 
@@ -103,8 +95,7 @@ jobs:
         run: ./run_all_tests.sh
 
   version:
-    needs: pick-runner
-    runs-on: ${{ fromJSON(needs.pick-runner.outputs.labels) }}
+    runs-on: arc-runner-set
     outputs:
       version: ${{ steps.next.outputs.version }}
     steps:
@@ -124,7 +115,7 @@ jobs:
           fi
 
   bake:
-    needs: [lint, test, version, pick-runner]
+    needs: [lint, test, version]
     uses: ./.github/workflows/reusable_image_pipeline.yml
     permissions:
       contents: write
@@ -133,4 +124,4 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       publish: false
       compression_level: 3
-      runner_labels: ${{ needs.pick-runner.outputs.labels_arm }}
+      runner_labels: '["arc-runner-set"]'
