@@ -108,6 +108,37 @@ MOCK_HW=1 PYTHONPATH=appliance/src python3 -m pytest appliance/tests/ -v
 module must be exercisable without a Pi, a radio, or root. If you write something
 that can only be tested on hardware, you have written it wrong.
 
+## Module map and control flow
+
+Full detail in [`docs/architecture.md`](docs/architecture.md); this is the shape
+you need before touching `daemon.py` or anything it wires together.
+
+```
+discovery ──> atomics <── policy
+                 │
+                 ▼
+   probe ──> capacity ──┐
+                        ├──> allocator ──> enforce ──> kernel
+   demand ──────────────┘        │
+                                 ├──> telemetry (decision records)
+   radio ──> lan                 │
+   tunnel <──────────────────────┘
+```
+
+`atomics/` is the centre; nothing below it may import from above it. `enforce/`
+is the only module permitted to shell out to `tc`, `nft`, or `ip`.
+
+`daemon.py` runs three cadences over one shared state store (`Registry`):
+
+| Loop | Period | Does |
+|---|---|---|
+| **fast** | ~1 s | radio observe/align, enforcement reconciliation, tunnel bind, LED |
+| **medium** | ~10 s | discovery, capacity/health measurement, demand sample, `allocator.decide` |
+| **slow** | ~5 min | telemetry flush, registry persist, throttling/health checks |
+
+Re-deciding allocation every second would flap; that's why allocation lives in
+the medium loop while failover-relevant reconciliation stays in the fast one.
+
 ## Architecture rules
 
 These are enforced in review. Each links to the ADR that explains why.
