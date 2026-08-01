@@ -1,3 +1,16 @@
+## v1.2.0 — 2026-08-01
+
+### feat
+- classify USB tether vs Ethernet adapter by interface descriptor (#13)
+
+### docs
+- track unconfirmed-on-hardware code paths in active-tests.md (#14)
+- changelog for v1.1.0 [skip ci]
+
+### ci
+- add ARC test workflow (manual trigger, arc-runner-set)
+
+
 ## v1.1.0 — 2026-07-31
 
 ### feat
