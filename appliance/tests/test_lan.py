@@ -14,6 +14,8 @@ from wifucked.lan import (
     dnsmasq_config,
     hostapd_config,
     lan_ifname_for_profile,
+    networkd_config,
+    networkd_unit_name,
     wpa_psk_file,
 )
 from wifucked.policy import BEST_EFFORT, CRITICAL, DEFAULT_PROFILES
@@ -111,6 +113,44 @@ class TestLanIfnameForProfile:
     def test_honours_a_non_default_base_interface(self):
         assert lan_ifname_for_profile(BEST_EFFORT, "two_bss", "wlan2") == "wlan2.20"
         assert lan_ifname_for_profile(CRITICAL, "two_bss", "wlan2") == "wlan2_1.10"
+
+
+class TestNetworkdConfig:
+    """Guards the static gateway address dnsmasq's DHCP leases point at.
+
+    Without a matching entry here, a client gets a lease whose gateway is an
+    address nothing on the device actually holds — connects to the SSID,
+    gets no usable network, and it looks indistinguishable from "no AP" to
+    whoever is holding the phone.
+    """
+
+    def test_matches_the_interface_hostapd_creates_for_the_profile(self):
+        config = LanConfig()
+        rendered = networkd_config(config, CRITICAL, DEFAULT_PROFILES, "two_bss")
+        assert "Name=wlan0_1.10" in rendered
+
+        rendered = networkd_config(config, BEST_EFFORT, DEFAULT_PROFILES, "two_bss")
+        assert "Name=wlan0.20" in rendered
+
+    def test_address_matches_the_subnet_dnsmasq_hands_out(self):
+        config = LanConfig()
+        rendered_dnsmasq = dnsmasq_config(config, DEFAULT_PROFILES)
+
+        for profile in DEFAULT_PROFILES:
+            rendered_net = networkd_config(config, profile, DEFAULT_PROFILES, "two_bss")
+            address_line = next(
+                line for line in rendered_net.splitlines() if line.startswith("Address=")
+            )
+            gateway = address_line.removeprefix("Address=").split("/")[0]
+            assert f"dhcp-option=tag:{profile.ssid_suffix},3,{gateway}" in rendered_dnsmasq
+
+    def test_no_dhcp_client_on_our_own_static_interface(self):
+        rendered = networkd_config(LanConfig(), BEST_EFFORT, DEFAULT_PROFILES, "two_bss")
+        assert "DHCP=no" in rendered
+
+    def test_unit_name_is_stable_per_profile(self):
+        assert networkd_unit_name(CRITICAL) != networkd_unit_name(BEST_EFFORT)
+        assert networkd_unit_name(CRITICAL).endswith(".network")
 
 
 class TestDnsmasqConfig:

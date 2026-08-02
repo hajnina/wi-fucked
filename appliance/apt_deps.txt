@@ -5,6 +5,10 @@
 hostapd
 dnsmasq
 avahi-daemon
+# A radio that boots rfkill-soft-blocked (no wpa_supplicant run has ever
+# unblocked it) makes hostapd fail nl80211 init with no SSID and no retry —
+# hostapd's drop-in unblocks it on every start, see setup_rpi.sh.
+rfkill
 
 # Data plane. Without these the appliance cannot do its job, which is why the
 # CI capability gate asserts sch_cake and wireguard are actually present.

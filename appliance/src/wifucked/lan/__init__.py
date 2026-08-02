@@ -151,6 +151,52 @@ def wpa_psk_file(identity: LanIdentity) -> str:
     )
 
 
+def networkd_unit_name(profile: ServiceProfile) -> str:
+    """Filename for a profile's static-address unit under ``/etc/systemd/network/``.
+
+    Numbered below dnsmasq/hostapd's implicit ordering concerns only in the
+    sense that it sorts predictably next to a future second unit; systemd-networkd
+    itself matches by interface name, not load order.
+    """
+    return f"10-wifucked-{profile.ssid_suffix}.network"
+
+
+def networkd_config(
+    config: LanConfig,
+    profile: ServiceProfile,
+    profiles: tuple[ServiceProfile, ...],
+    lan_mode: str,
+    base_interface: str = "wlan0",
+) -> str:
+    """Static gateway address for one profile's VLAN subinterface.
+
+    hostapd creates ``wlan0.<vlan>`` / ``wlan0_1.<vlan>`` itself (static
+    ``vlan_id`` per BSS); nothing else in this system assigns those
+    interfaces an address, so without this a client gets a DHCP lease
+    pointing at a gateway that does not exist. Matched by interface name
+    (``[Match] Name=``) rather than started/ordered against hostapd, so it
+    applies whenever the interface appears — independent of the daemon,
+    same as hostapd and dnsmasq themselves (ADR-011).
+    """
+    index = profiles.index(profile)
+    octets = config.address.split(".")
+    third = int(octets[2]) + index
+    address = f"{octets[0]}.{octets[1]}.{third}.1"
+    ifname = lan_ifname_for_profile(profile, lan_mode, base_interface)
+    return f"""# Generated at first boot. Static gateway address for the {profile.name}
+# VLAN subinterface (ADR-011: independent of the daemon, matched by name).
+[Match]
+Name={ifname}
+
+[Network]
+Address={address}/{config.prefix}
+DHCP=no
+IPv6AcceptRA=no
+LinkLocalAddressing=no
+ConfigureWithoutCarrier=yes
+"""
+
+
 def dnsmasq_config(config: LanConfig, profiles: tuple[ServiceProfile, ...]) -> str:
     """DHCP and DNS for each service VLAN, plus captive-portal wildcard DNS."""
     octets = config.address.split(".")
