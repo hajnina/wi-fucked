@@ -32,6 +32,10 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # Needed for the `gh workflow run main_release.yml` dispatch below —
+  # without it GITHUB_TOKEN gets a 403 ("Resource not accessible by
+  # integration") calling the workflow-dispatch API, confirmed live.
+  actions: write
 
 jobs:
   automerge:
