@@ -1,3 +1,15 @@
+## v1.2.2 — 2026-08-02
+
+### fix
+- grant automerge's GITHUB_TOKEN actions:write for the release dispatch (#22)
+
+### docs
+- changelog for v1.2.1 [skip ci]
+
+### ci
+- only upload build caches from fast-uplink runners (#21)
+
+
 ## v1.2.1 — 2026-08-02
 
 ### fix
