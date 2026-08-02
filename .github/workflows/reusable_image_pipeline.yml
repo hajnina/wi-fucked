@@ -312,7 +312,7 @@ jobs:
 
   fabric:
     # Two ends of one protocol: they ship together, at the same version.
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
     permissions:
       contents: read
       packages: write
