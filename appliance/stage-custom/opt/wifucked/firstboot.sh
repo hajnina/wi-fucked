@@ -56,7 +56,14 @@ import sys
 from pathlib import Path
 
 from wifucked.config import LanConfig
-from wifucked.lan import derive_identity, dnsmasq_config, hostapd_config, wpa_psk_file
+from wifucked.lan import (
+    derive_identity,
+    dnsmasq_config,
+    hostapd_config,
+    networkd_config,
+    networkd_unit_name,
+    wpa_psk_file,
+)
 from wifucked.policy import DEFAULT_PROFILES
 
 serial, lan_mode, channel = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -72,6 +79,18 @@ if lan_mode == "two_psk":
     psk.chmod(0o600)
 
 Path("/etc/dnsmasq.d/wifucked.conf").write_text(dnsmasq_config(config, DEFAULT_PROFILES))
+
+# Static gateway address for each profile's VLAN subinterface — dnsmasq hands
+# out these addresses as the DHCP gateway, so without this a client gets a
+# lease pointing at nothing. systemd-networkd matches by interface name and
+# applies whenever hostapd brings the subinterface up; no ordering against
+# hostapd is needed (ADR-011).
+network_dir = Path("/etc/systemd/network")
+network_dir.mkdir(parents=True, exist_ok=True)
+for profile in DEFAULT_PROFILES:
+    (network_dir / networkd_unit_name(profile)).write_text(
+        networkd_config(config, profile, DEFAULT_PROFILES, lan_mode)
+    )
 
 # The label card. Printed on the device, and the only way a user learns the
 # passphrase — so it is written where support can also read it back.

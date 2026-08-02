@@ -65,14 +65,23 @@ systemctl enable wifucked-watchdog.timer
 systemctl enable wifucked-console.service
 
 # NetworkManager must not manage the AP interface or fight us over the WAN
-# routes we install.
+# routes we install. The AP radio is always named wlan0 on this hardware (one
+# onboard radio, per docs/hardware.md) and hostapd splits it into wlan0_1 plus
+# per-profile VLAN subinterfaces (wlan0.<vlan>, wlan0_1.<vlan> — see
+# lan_ifname_for_profile()); the glob covers the base BSS and every
+# subinterface hostapd creates under it. Previously this listed "ap0", an
+# interface that has never existed on this hardware — NetworkManager kept
+# managing the real AP radio and its wpa_supplicant backend contended with
+# hostapd for wlan0, which is consistent with "no SSID ever appears" (#15).
+systemctl unmask systemd-networkd || true
+systemctl enable systemd-networkd
 mkdir -p /etc/NetworkManager/conf.d
 cat > /etc/NetworkManager/conf.d/10-wifucked.conf <<'EOF'
 [main]
 dns=none
 
 [keyfile]
-unmanaged-devices=interface-name:ap0;interface-name:wg0
+unmanaged-devices=interface-name:wlan0*;interface-name:wg0
 EOF
 
 # --- USB OTG host mode -------------------------------------------------------
