@@ -9,6 +9,18 @@
 # Runs in the base repo's context (workflow_run, not pull_request), so a
 # fork's CI success must never merge anything — see the fork guard below.
 # SOP-005 governs the policy this encodes: don't leave a green PR open.
+#
+# Also dispatches main_release.yml after a successful merge. GitHub does not
+# fire push-triggered workflows for commits made by the built-in
+# GITHUB_TOKEN (an anti-recursion safeguard), so the `gh pr merge` above
+# silently does NOT trigger main_release.yml's `on: push` — every PR merged
+# this way merges cleanly but never produces a release. Confirmed by history:
+# no push-triggered Main Release run fired for any PR merged since this
+# workflow was introduced. workflow_dispatch, unlike push/pull_request, is an
+# explicit API call and is not subject to that restriction, so this uses that
+# instead — replicating main_release.yml's own paths filter first, since
+# workflow_dispatch bypasses path filtering and would otherwise bake+publish
+# a release for every merge regardless of what changed.
 
 name: Auto-merge
 
@@ -58,6 +70,7 @@ jobs:
           echo "number=${number}" >> "$GITHUB_OUTPUT"
 
       - name: Merge if clean
+        id: merge
         if: steps.pr.outputs.number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -85,8 +98,41 @@ jobs:
           if [ "${is_open}" = "true" ] && [ "${not_draft}" = "true" ] \
              && [ "${mergeable}" = "true" ] && [ "${clean}" = "true" ]; then
             gh pr merge "${NUMBER}" --repo "${{ github.repository }}" --squash --delete-branch
+            echo "merged=true" >> "$GITHUB_OUTPUT"
           else
             echo "PR #${NUMBER} is not in a clean mergeable state" \
                  "(open=${is_open} not_draft=${not_draft} mergeable=${mergeable} clean=${clean});" \
                  "leaving it for manual review."
+            echo "merged=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # workflow_dispatch bypasses main_release.yml's own `paths:` filter
+      # entirely, so replicate it here — otherwise every merge (docs-only
+      # changes included) would bake and publish a release.
+      - name: Check whether the merge touched a buildable path
+        if: steps.merge.outputs.merged == 'true'
+        id: touched
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          files="$(gh pr view "${NUMBER}" --repo "${{ github.repository }}" --json files \
+            --jq '.files[].path')"
+          echo "${files}"
+
+          match=false
+          while IFS= read -r f; do
+            case "${f}" in
+              appliance/*|fabric/*|scripts/*|.github/workflows/*|.github/builder.Dockerfile|run_all_tests.sh)
+                match=true
+                ;;
+            esac
+          done <<<"${files}"
+          echo "match=${match}" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch a real release build
+        if: steps.merge.outputs.merged == 'true' && steps.touched.outputs.match == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run main_release.yml --repo "${{ github.repository }}" --ref main
