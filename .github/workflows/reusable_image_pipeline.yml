@@ -52,7 +52,29 @@ jobs:
       package: ${{ steps.names.outputs.package }}
     steps:
       - name: Install base dependencies
-        run: sudo apt-get update && sudo apt-get install -y git python3 zstd qemu-user-static jq
+        run: sudo apt-get update && sudo apt-get install -y git python3 zstd qemu-user-static jq speedtest-cli
+
+      # Cache uploads (the `actions/cache/save` steps below) compete with the
+      # runner's own upload of the actual build artifact for the same
+      # constrained, often-shared uplink. On a slow or bandwidth-capped
+      # runner, spending that budget on a cache — which only ever saves time
+      # on a *future* run, and only on a cache miss — isn't worth it over
+      # spending it on the artifact this run actually needs to ship. Measure
+      # once, gate every cache-save step in this job on it.
+      - name: Measure uplink speed
+        id: speedtest
+        run: |
+          set -euo pipefail
+          RESULT="$(speedtest-cli --secure --simple)"
+          echo "${RESULT}"
+          UPLOAD_MBPS="$(echo "${RESULT}" | awk '/^Upload/{print $2}')"
+          FAST=false
+          if awk -v u="${UPLOAD_MBPS}" 'BEGIN{exit !(u > 100)}'; then
+            FAST=true
+          fi
+          echo "Measured upload: ${UPLOAD_MBPS} Mbit/s (fast_uplink=${FAST})"
+          echo "upload_mbps=${UPLOAD_MBPS}" >> "$GITHUB_OUTPUT"
+          echo "fast_uplink=${FAST}" >> "$GITHUB_OUTPUT"
 
       # head.sha, not head.ref: a branch name is racy and resolves wrong for
       # forks. Gutiva's oracle pipeline already does this; its firmware pipeline
@@ -79,9 +101,9 @@ jobs:
         with:
           driver: docker-container
 
-      - name: Cache builder image
+      - name: Restore builder image cache
         id: builder-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: builder.tar.zst
           key: builder-${{ runner.os }}-${{ hashFiles('.github/builder.Dockerfile') }}
@@ -109,11 +131,18 @@ jobs:
           zstd -T0 -3 builder.tar -o builder.tar.zst
           rm builder.tar
 
+      - name: Save builder image cache
+        if: steps.builder-cache.outputs.cache-hit != 'true' && steps.speedtest.outputs.fast_uplink == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: builder.tar.zst
+          key: ${{ steps.builder-cache.outputs.cache-primary-key }}
+
       # Stage A is the slow one — all the apt work happens here — and the only
       # one worth caching. Keyed on what actually changes it.
-      - name: Cache base image
+      - name: Restore base image cache
         id: base-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: raspios-base.img.zst
           key: base-${{ runner.os }}-${{ hashFiles('.github/builder.Dockerfile', 'appliance/setup_rpi.sh', 'appliance/apt_deps.txt') }}
@@ -177,6 +206,13 @@ jobs:
           INNER
           docker cp "${CID}:/raspios-base.img.zst" .
           docker rm -f "${CID}"
+
+      - name: Save base image cache
+        if: steps.base-cache.outputs.cache-hit != 'true' && steps.speedtest.outputs.fast_uplink == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: raspios-base.img.zst
+          key: ${{ steps.base-cache.outputs.cache-primary-key }}
 
       - name: Stage B — build update package
         run: ./scripts/build_package.sh "${{ inputs.version }}" "${{ steps.names.outputs.package }}"
@@ -325,6 +361,27 @@ jobs:
         id: repo
         run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
+      # cache-to below uploads every layer (mode=max) to the GHA cache
+      # backend — real bytes over the same constrained uplink the artifact
+      # itself needs. cache-from (restore, a download) stays unconditional;
+      # only the upload is worth gating. See the identical step in the
+      # `bake` job above for the full rationale.
+      - name: Measure uplink speed
+        id: speedtest
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y speedtest-cli
+          RESULT="$(speedtest-cli --secure --simple)"
+          echo "${RESULT}"
+          UPLOAD_MBPS="$(echo "${RESULT}" | awk '/^Upload/{print $2}')"
+          FAST=false
+          if awk -v u="${UPLOAD_MBPS}" 'BEGIN{exit !(u > 100)}'; then
+            FAST=true
+          fi
+          echo "Measured upload: ${UPLOAD_MBPS} Mbit/s (fast_uplink=${FAST})"
+          echo "upload_mbps=${UPLOAD_MBPS}" >> "$GITHUB_OUTPUT"
+          echo "fast_uplink=${FAST}" >> "$GITHUB_OUTPUT"
+
       - name: Log in to GHCR
         if: ${{ inputs.publish }}
         uses: docker/login-action@v3
@@ -347,4 +404,4 @@ jobs:
           push: ${{ inputs.publish }}
           tags: ghcr.io/${{ steps.repo.outputs.name }}/fabric:${{ inputs.version }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: ${{ steps.speedtest.outputs.fast_uplink == 'true' && 'type=gha,mode=max' || '' }}
