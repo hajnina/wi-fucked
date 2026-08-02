@@ -1,3 +1,17 @@
+## v1.2.1 — 2026-08-02
+
+### fix
+- stop NetworkManager fighting hostapd for the AP radio (#19)
+- force USB OTG host mode, and add temporary bring-up diagnostics (#16)
+
+### docs
+- changelog for v1.2.0 [skip ci]
+
+### ci
+- dispatch a release build after auto-merging (#20)
+- route bake and fabric jobs to arc-runner-set (#18)
+
+
 ## v1.2.0 — 2026-08-01
 
 ### feat
