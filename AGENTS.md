@@ -39,6 +39,7 @@ MOCK_HW=1 PYTHONPATH=appliance/src python3 -m wifucked     # run it
 | [`docs/architecture.md`](docs/architecture.md) | How the system fits together |
 | [`docs/hardware.md`](docs/hardware.md) | What a Pi Zero 2W can and cannot do |
 | [`docs/roadmap.md`](docs/roadmap.md) | Phases, workstreams, exit criteria |
+| [`docs/backlog/traffic-blockers.md`](docs/backlog/traffic-blockers.md) | Live, ordered backlog of known blockers to passing real traffic. If you're picking up general work with no other assignment, take the next `not started` item there, in order, and update its status in the same PR. |
 
 ## Obligations
 
