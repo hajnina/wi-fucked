@@ -153,7 +153,7 @@ both the API's `set_mode`/`persist()` and the loop's `observe()`), and
 lock + flock — reuse that pattern/reasoning).
 
 ### 8. perf(daemon): stop the medium loop from starving the fast loop
-**Status:** in progress
+**Status:** PR #37
 
 `daemon.tick()` runs loops sequentially in one thread; `LinuxProber
 ._active_probe` (`probe/__init__.py` ~319-334) blocks on up to two `ping`
