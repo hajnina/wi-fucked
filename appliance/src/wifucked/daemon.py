@@ -23,7 +23,7 @@ from wifucked.atomics import Health, Mode, Registry
 from wifucked.clock import Clock, RealClock
 from wifucked.config import Config, release_info
 from wifucked.demand import CounterDemand, DemandEstimator, StaticDemand
-from wifucked.discovery import discover
+from wifucked.discovery import Discoverer
 from wifucked.enforce import Enforcer, LinuxEnforcer, MockEnforcer, render
 from wifucked.hal import Hal, build_hal
 from wifucked.logging import get_logger
@@ -61,6 +61,9 @@ class Daemon:
         )
         self.registry = Registry(self.clock, config.registry_path if persist else None)
         self.allocator = Allocator(self.clock, self.telemetry, config.thresholds)
+        self.discoverer = Discoverer(
+            self.clock, wifi_scan_min_interval_s=config.loops.wifi_scan_min_interval_s
+        )
 
         # Real, hardware-backed implementations when there is real hardware to
         # back them; the scripted/mock fakes otherwise. `self.hal.mocked` is the
@@ -251,7 +254,7 @@ class Daemon:
     # -- steps ----------------------------------------------------------------
 
     def discover_once(self) -> None:
-        self.registry.observe(discover(self.hal))
+        self.registry.observe(self.discoverer.discover(self.hal))
 
     def _measure(self) -> None:
         now = self.clock.now()

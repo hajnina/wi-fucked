@@ -108,6 +108,13 @@ class Atomic:
     first_seen: float | None = None
     last_seen: float | None = None
 
+    #: Sticky once True. Set the first time this atomic was actually connected
+    #: to (a Wi-Fi station association, a USB link with carrier) rather than
+    #: merely seen in a scan. Bounds what `Registry.persist()` writes to disk
+    #: (ADR-010): a network glimpsed once and never joined has no reason to
+    #: live in `atomics.json` forever.
+    ever_connected: bool = False
+
     #: Kind-specific detail for the dashboard (SSID, channel, USB serial, …).
     attributes: dict[str, str] = field(default_factory=dict)
 
