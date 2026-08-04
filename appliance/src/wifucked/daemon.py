@@ -73,7 +73,16 @@ class Daemon:
         self.enforcer = enforcer or (
             LinuxEnforcer(lan_mode=config.lan.lan_mode) if real_hw else MockEnforcer()
         )
-        self.prober = prober or (LinuxProber(self.hal, self.clock) if real_hw else ScriptedProber())
+        self.prober = prober or (
+            LinuxProber(
+                self.hal,
+                self.clock,
+                active_probe_budget_s=config.loops.probe_budget_s,
+                active_probe_timeout_s=config.loops.probe_timeout_s,
+            )
+            if real_hw
+            else ScriptedProber()
+        )
         self.demand = demand or (
             CounterDemand(
                 DEFAULT_PROFILES, hal=self.hal, clock=self.clock, lan_mode=config.lan.lan_mode
@@ -260,6 +269,12 @@ class Daemon:
 
     def _measure(self) -> None:
         now = self.clock.now()
+        # Bound this pass's blocking active probing (see item 8 in
+        # docs/backlog/traffic-blockers.md and probe.LinuxProber.begin_pass) so
+        # a slow or hung `ping` can't push this tick() call — which the fast
+        # loop's failover/reconciliation runs *after*, on the same thread —
+        # past the fast loop's own cadence.
+        self.prober.begin_pass(now)
         for atomic in self.registry.present():
             observation = self.prober.observe(atomic)
             if observation is None:

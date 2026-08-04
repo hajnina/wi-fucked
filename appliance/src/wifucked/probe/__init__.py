@@ -56,6 +56,15 @@ class Prober(Protocol):
     def observe(self, atomic: Atomic) -> Observation | None:
         """One observation, or None if nothing could be measured."""
 
+    def begin_pass(self, now: float) -> None:
+        """Called once before each measurement sweep across all atomics.
+
+        Lets a prober with a wall-clock budget for blocking work (active
+        `ping` probing in `LinuxProber`) reset it. A prober with nothing to
+        bound is free to no-op — the default here — and every concrete Prober
+        in this module does exactly that except `LinuxProber`.
+        """
+
 
 def decay_confidence(capacity: Capacity, now: float) -> float:
     """Exponential decay of an estimate's confidence with age."""
@@ -234,7 +243,7 @@ def _parse_ping(out: str) -> PingResult | None:
     return PingResult(loss_pct=loss_pct, rtt_ms=avg, jitter_ms=mdev)
 
 
-def _run(argv: list[str], timeout: float = 10.0) -> str | None:
+def _run(argv: list[str], timeout: float = 4.0) -> str | None:
     """Run a command, returning stdout or None. Never raises.
 
     Mirrors ``wifucked.hal.linux._run`` but tolerates ``ping``'s exit code 1:
@@ -288,10 +297,33 @@ class LinuxProber(PassiveProber):
     one under load does not inflate it.
     """
 
-    def __init__(self, hal: Hal, clock: Clock):
+    def __init__(
+        self,
+        hal: Hal,
+        clock: Clock,
+        *,
+        active_probe_budget_s: float = 2.0,
+        active_probe_timeout_s: float = 4.0,
+    ):
         super().__init__(hal, clock)
         #: atomic_id -> lowest mean RTT ever observed, the bufferbloat baseline.
         self._rtt_floor: dict[str, float] = {}
+        #: Wall-clock ceiling on active probing across one `begin_pass()`..next
+        #: `begin_pass()` sweep. See `docs/backlog/traffic-blockers.md` item 8 —
+        #: `Daemon.tick()` runs the medium loop (which drives this) before the
+        #: fast loop on the same thread, so an unbounded sweep here starves
+        #: failover. Once the budget is spent, remaining atomics fall back to
+        #: passive-only observations for this pass and get actively probed on
+        #: the next one.
+        self._active_probe_budget_s = active_probe_budget_s
+        self._active_probe_timeout_s = active_probe_timeout_s
+        self._pass_deadline: float | None = None
+
+    def begin_pass(self, now: float) -> None:
+        self._pass_deadline = now + self._active_probe_budget_s
+
+    def _budget_exhausted(self) -> bool:
+        return self._pass_deadline is not None and self._clock.now() >= self._pass_deadline
 
     def observe(self, atomic: Atomic) -> Observation | None:
         passive = super().observe(atomic)
@@ -301,6 +333,19 @@ class LinuxProber(PassiveProber):
             return passive
         ifname = atomic.ifname
         if not ifname:
+            return passive
+        if self._budget_exhausted():
+            log.debug(
+                "Active probe skipped: per-pass time budget exhausted",
+                extra={
+                    "workflow": "active_probe",
+                    "state": "skipped",
+                    "intent": "measure RTT, jitter and loss on a NORMAL link",
+                    "atomic_id": atomic.id,
+                    "reason": "active_probe_budget_s spent on earlier atomics this pass",
+                    "budget_s": self._active_probe_budget_s,
+                },
+            )
             return passive
 
         result = self._active_probe(atomic.id, ifname)
@@ -325,9 +370,13 @@ class LinuxProber(PassiveProber):
         keeps a loss-only result as the fallback if none answer.
         """
         fallback: PingResult | None = None
-        for target in PROBE_TARGETS:
+        for i, target in enumerate(PROBE_TARGETS):
+            if i > 0 and self._budget_exhausted():
+                # The first target already spent the pass budget — do not
+                # start another timeout-bounded subprocess for this atomic.
+                break
             argv = ["ping", "-c", str(PROBE_COUNT), "-W", "1", "-I", ifname, target]
-            out = _run(argv)
+            out = _run(argv, timeout=self._active_probe_timeout_s)
             if out is None:
                 continue
             parsed = _parse_ping(out)

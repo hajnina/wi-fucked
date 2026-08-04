@@ -49,6 +49,21 @@ second would flap ([ADR-006](adr/ADR-006-backup-liveness-budget.md) and the
 hysteresis machine in `allocator/`), and learning is expensive enough that it must
 not sit in the hot path.
 
+All three loops run from `Daemon.tick()`, called sequentially on one thread —
+medium before fast, because the medium loop is what produces a fresh
+`Allocation` and the fast loop is what reconciles the kernel against it
+(`daemon.py`'s `tick()`). That means anything the medium loop blocks on delays
+the fast loop's failover/reconciliation pass on that same `tick()` call. The
+medium loop's active RTT/jitter/loss probing (`probe.LinuxProber`, one or two
+blocking `ping` invocations per NORMAL atomic) is bounded to a configurable
+wall-clock budget per pass — `Config.loops.probe_budget_s` (default 2 s) — so
+it cannot do this regardless of how many atomics are present: once the budget
+for a pass is spent, remaining atomics fall back to their passive throughput
+observation and get actively probed on the next medium-loop pass instead. Each
+individual `ping` subprocess is separately capped at `Config.loops
+.probe_timeout_s` (default 4 s) as a floor under that budget, so one wedged
+process can't blow it open. See docs/backlog/traffic-blockers.md item 8.
+
 ## Modules
 
 ```

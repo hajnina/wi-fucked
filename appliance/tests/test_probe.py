@@ -223,3 +223,96 @@ class TestActiveProbing:
 
         assert obs is not None
         assert obs.rtt_ms == 13.133  # the live target's number, not the dead one's
+
+
+class TestActiveProbeBudget:
+    """docs/backlog/traffic-blockers.md item 8: `_active_probe` used to be able
+    to block for up to len(PROBE_TARGETS) * timeout per atomic, and `_measure()`
+    calls it once per atomic on the same thread that later runs the fast loop
+    within the same `tick()` — so an unbounded sweep across every NORMAL atomic
+    starved failover/reconciliation. `begin_pass()` + the per-pass deadline
+    below is what bounds it.
+    """
+
+    def _atomic(self, atomic_id: str, ifname: str) -> Atomic:
+        return Atomic(
+            id=atomic_id,
+            kind=Kind.WIFI,
+            label=atomic_id,
+            mode=Mode.NORMAL,
+            ifname=ifname,
+            present=True,
+        )
+
+    def _seed_passive(self, prober: LinuxProber, atomic: Atomic) -> None:
+        """One throwaway observe() call so the next one has a passive delta."""
+        prober.observe(atomic)
+        prober._hal.net.add_traffic(atomic.ifname, rx=1000, tx=1000)  # type: ignore[arg-type]
+
+    def test_deadline_reached_skips_the_ping_entirely(self, monkeypatch):
+        calls: list[list[str]] = []
+
+        def fake_run(argv, timeout=10.0):
+            calls.append(argv)
+            return _GOOD_PING
+
+        monkeypatch.setattr(probe_module, "_run", fake_run)
+        clock = VirtualClock()
+        prober = LinuxProber(build_mock_hal(), clock, active_probe_budget_s=1.0)
+        atomic = self._atomic("hotel", WLAN)
+        self._seed_passive(prober, atomic)
+        clock.advance(1)
+
+        prober.begin_pass(clock.now())
+        clock.advance(2)  # past the 1s budget before observe() even runs
+        obs = prober.observe(atomic)
+
+        assert obs is not None
+        assert obs.rtt_ms is None, "active probe must have been skipped, not attempted"
+        assert calls == [], "no ping subprocess should have been spawned past the deadline"
+
+    def test_budget_bounds_wall_clock_time_across_many_atomics(self, monkeypatch):
+        """The end-to-end proof: with a real clock and a slow ping, probing N
+        atomics costs roughly the budget plus one in-flight call — not N times
+        the per-call cost. This is what keeps `Daemon._measure()` (called from
+        the medium loop, before the fast loop, in the same `tick()`) from
+        starving the ~1s fast loop cadence documented in docs/architecture.md.
+        """
+        import time as time_module
+
+        from wifucked.clock import RealClock
+
+        call_count = 0
+
+        def slow_run(argv, timeout=10.0):
+            nonlocal call_count
+            call_count += 1
+            time_module.sleep(0.2)
+            return _GOOD_PING
+
+        monkeypatch.setattr(probe_module, "_run", slow_run)
+
+        hal = build_mock_hal()
+        clock = RealClock()
+        atomics = [self._atomic(f"a{i}", f"wlan{i}") for i in range(6)]
+        prober = LinuxProber(hal, clock, active_probe_budget_s=0.3, active_probe_timeout_s=4.0)
+        for atomic in atomics:
+            self._seed_passive(prober, atomic)
+
+        start = time_module.perf_counter()
+        prober.begin_pass(clock.now())
+        observations = [prober.observe(atomic) for atomic in atomics]
+        elapsed = time_module.perf_counter() - start
+
+        naive_worst_case_s = len(atomics) * 0.2  # unbounded: one slow ping per atomic
+        assert elapsed < naive_worst_case_s, (
+            f"budgeted sweep took {elapsed:.2f}s, no better than the unbounded "
+            f"{naive_worst_case_s:.2f}s worst case"
+        )
+        # Budget (0.3s) plus at most one more in-flight 0.2s call, plus slack.
+        assert elapsed < 0.8, f"budgeted sweep took {elapsed:.2f}s, wanted well under 0.8s"
+        assert call_count < len(atomics), "not every atomic should have been actively probed"
+        probed = [o for o in observations if o is not None and o.rtt_ms is not None]
+        skipped = [o for o in observations if o is not None and o.rtt_ms is None]
+        assert probed, "at least the first atomic should have been actively probed"
+        assert skipped, "later atomics should have fallen back to passive-only"
