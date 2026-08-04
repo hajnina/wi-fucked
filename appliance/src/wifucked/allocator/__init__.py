@@ -163,12 +163,21 @@ class Allocator:
                 self._h.transitions += 1
 
         elif state is BackupState.ACTIVE:
-            if recovered:
+            if not have_backup:
+                # The atomic actually carrying BACKUP traffic is gone. There is
+                # nothing left to release — go straight to IDLE rather than
+                # staying ACTIVE forever with no backup to be active on.
+                self._enter(BackupState.IDLE, now)
+            elif recovered:
                 self._enter(BackupState.RELEASING, now)
 
         elif state is BackupState.RELEASING:
             if not recovered:
-                self._enter(BackupState.ACTIVE, now)
+                # Re-activation is a fresh activation, not a bounce: route
+                # through ARMING so it honors the same activation dwell as a
+                # first-time arm. Without this a single bad sample right after
+                # recovery flips straight back to ACTIVE with zero dwell.
+                self._enter(BackupState.ARMING, now)
             elif elapsed >= t.recovery_dwell_s:
                 self._enter(BackupState.IDLE, now)
                 self._h.transitions += 1
@@ -266,7 +275,14 @@ class Allocator:
         shares: list[Share] = []
         quiesced: list[str] = []
 
-        if primary is not None:
+        # `primary` can equal `backup` when the NORMAL pool is empty and
+        # BACKUP has been promoted to primary (see `decide()`). There is no
+        # separate NORMAL capacity in that case, so the headroom-based
+        # primary path below doesn't apply — the backup-active block further
+        # down (full demand, gated by `may_use_backup`) is the only share
+        # builder that should run for this atomic. Building both would emit
+        # two conflicting `Share` entries for the same atomic/profile pair.
+        if primary is not None and primary is not backup:
             headroom = max(0, normal_capacity)
             for profile in sorted(self._profiles, key=lambda p: p.priority):
                 want = demand.get(profile.name)
@@ -313,6 +329,16 @@ class Allocator:
             action, reason = (
                 "activate_backup",
                 "NORMAL capacity below critical demand beyond the activation threshold",
+            )
+        elif self._h.state is BackupState.ARMING:
+            # A healthy BACKUP is waiting out the activation dwell. It is not
+            # yet carrying traffic, but there is nothing wrong with
+            # connectivity — reporting "no usable connection" here would be a
+            # lie the dashboard would show to a user watching a healthy
+            # backup arm.
+            action, reason = (
+                "arming_backup",
+                "NORMAL capacity below critical demand; BACKUP arming, dwell not yet elapsed",
             )
         elif allocation.primary_id is None:
             action, reason = "no_connectivity", "no usable NORMAL or BACKUP connection"
