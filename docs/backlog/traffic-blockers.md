@@ -223,7 +223,7 @@ land after both.
   `limit` query param — validate and return 400.
 
 ### 14. fix(hal/wifi): make Wi-Fi-as-WAN usable under unmanaged-devices
-**Status:** not started
+**Status:** in progress
 
 `setup_rpi.sh:84` marks `wlan0*` unmanaged by NetworkManager (correct,
 needed for the AP), but `hal/linux.py` `LinuxWifi.scan()` /

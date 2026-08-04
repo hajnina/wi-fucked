@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import ClassVar
 
@@ -38,6 +39,50 @@ log = get_logger("hal.linux")
 _SYS_NET = Path("/sys/class/net")
 _SYS_USB = Path("/sys/bus/usb/devices")
 _LED = Path("/sys/class/leds/ACT")
+
+#: tmpfs runtime dir (setup_rpi.sh creates /run/wifucked already, ADR-010) —
+#: wpa_supplicant's config/control socket/pidfile for the Wi-Fi-as-WAN station
+#: link live here, never on the SD card.
+_WPA_RUN_DIR = Path("/run/wifucked")
+#: How long to wait for association after starting wpa_supplicant before
+#: giving up. Chosen to be generous for a slow AP handshake without blocking
+#: the caller indefinitely; not measured against real hardware timing.
+_STATION_ASSOC_TIMEOUT_S = 20.0
+
+
+def _wpa_conf_path(ifname: str) -> Path:
+    return _WPA_RUN_DIR / f"wpa_supplicant-{ifname}.conf"
+
+
+def _wpa_pid_path(ifname: str) -> Path:
+    return _WPA_RUN_DIR / f"wpa_supplicant-{ifname}.pid"
+
+
+def _escape_wpa_string(value: str) -> str:
+    """Escape a value for a double-quoted wpa_supplicant config string."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _wpa_supplicant_conf(ssid: str, passphrase: str | None) -> str:
+    """Build a minimal single-network wpa_supplicant config.
+
+    Written directly with Python (not shelled through a template) so an SSID
+    or passphrase containing shell metacharacters can never reach a shell —
+    only the config file's own quoting rules apply, and those are escaped
+    above.
+    """
+    lines = [f'ssid="{_escape_wpa_string(ssid)}"']
+    if passphrase:
+        lines.append("key_mgmt=WPA-PSK")
+        lines.append(f'psk="{_escape_wpa_string(passphrase)}"')
+    else:
+        lines.append("key_mgmt=NONE")
+    network_block = "\n    ".join(lines)
+    return (
+        f"ctrl_interface={_WPA_RUN_DIR}/wpa_supplicant\n"
+        "update_config=0\n"
+        f"network={{\n    {network_block}\n}}\n"
+    )
 
 
 def _run(argv: list[str], timeout: float = 10.0) -> str | None:
@@ -78,32 +123,22 @@ class LinuxWifi(WifiHal):
         self.ifname = ifname
 
     def scan(self) -> list[ScannedNetwork]:
-        out = _run(["nmcli", "-t", "-f", "SSID,BSSID,CHAN,SIGNAL,SECURITY", "dev", "wifi"])
+        """Scan for networks via ``iw`` directly.
+
+        ``setup_rpi.sh`` marks ``wlan0*`` unmanaged by NetworkManager so
+        hostapd can own the radio (ADR-011) — which also means `nmcli` cannot
+        drive this interface, so this shells out to ``iw`` the same way
+        ``station_link()`` already does. ``iw scan`` typically needs
+        `CAP_NET_ADMIN` (this daemon runs as root, same assumption every other
+        privileged call in this module makes) and can fail outright while the
+        interface is doing AP+STA concurrent duty (radio-spike.md Q1) — an
+        empty/failed scan degrades to "no networks found" rather than raising,
+        consistent with `_run()`'s never-raises contract.
+        """
+        out = _run(["iw", "dev", self.ifname, "scan"], timeout=30.0)
         if not out:
             return []
-        networks: list[ScannedNetwork] = []
-        for line in out.splitlines():
-            # nmcli escapes the colons inside a BSSID as '\:'
-            fields = line.replace("\\:", "\x00").split(":")
-            if len(fields) < 5:
-                continue
-            ssid, bssid, chan, signal, security = (f.replace("\x00", ":") for f in fields[:5])
-            if not ssid:
-                continue
-            try:
-                networks.append(
-                    ScannedNetwork(
-                        ssid=ssid,
-                        bssid=bssid,
-                        channel=int(chan),
-                        # nmcli reports 0-100 quality; map to a rough dBm.
-                        signal_dbm=int(signal) // 2 - 100,
-                        secured=bool(security.strip()),
-                    )
-                )
-            except ValueError:
-                continue
-        return networks
+        return _parse_scan_dump(out)
 
     def station_link(self) -> StationLink | None:
         out = _run(["iw", "dev", self.ifname, "link"])
@@ -124,13 +159,126 @@ class LinuxWifi(WifiHal):
         return StationLink(ssid, bssid, channel, self.ifname)
 
     def connect_station(self, ssid: str, passphrase: str | None) -> bool:
-        argv = ["nmcli", "dev", "wifi", "connect", ssid]
-        if passphrase:
-            argv += ["password", passphrase]
-        return _run(argv, timeout=45.0) is not None
+        """Join a Wi-Fi network as a station, driving ``wpa_supplicant`` directly.
+
+        `nmcli` cannot be used here for the same reason `scan()` cannot: this
+        interface is `unmanaged-devices` for NetworkManager (setup_rpi.sh) so
+        hostapd can own the radio undisturbed. There is no simpler `iw`-only
+        path for authenticated association — `iw` can join open networks but
+        does not speak WPA/WPA2 handshakes, so this writes a scoped
+        `wpa_supplicant` config to the tmpfs runtime dir (`/run/wifucked`,
+        already created for SD-card-write avoidance, ADR-010), starts a
+        detached `wpa_supplicant` bound to this interface only, waits for
+        association, then leases an address with `dhclient`.
+
+        JUDGMENT CALL — flagged for hardware review (see PR body and
+        docs/active-tests.md): whether `wpa_supplicant`/`dhclient` can run
+        against `wlan0` at all *while hostapd also holds wlan0* for the AP
+        (SHARED profile, AP+STA concurrency) is exactly the thing
+        docs/radio-spike.md Q1 has not yet measured. This method is written
+        to be correct for "some interface running station mode against this
+        driver," not confirmed for "concurrently with hostapd on this chip."
+        """
+        start = time.monotonic()
+        self.disconnect_station()
+        try:
+            _WPA_RUN_DIR.mkdir(parents=True, exist_ok=True)
+            _wpa_conf_path(self.ifname).write_text(_wpa_supplicant_conf(ssid, passphrase))
+        except OSError as exc:
+            log.warning(
+                "Could not write wpa_supplicant config",
+                extra={
+                    "workflow": "wan_wifi_connect",
+                    "state": "failed",
+                    "intent": "join a Wi-Fi network as the WAN station link",
+                    "ifname": self.ifname,
+                    "ssid": ssid,
+                    "reason": "could not write runtime config",
+                    "error": str(exc),
+                },
+            )
+            return False
+
+        started = (
+            _run(
+                [
+                    "wpa_supplicant",
+                    "-B",
+                    "-D",
+                    "nl80211",
+                    "-i",
+                    self.ifname,
+                    "-c",
+                    str(_wpa_conf_path(self.ifname)),
+                    "-P",
+                    str(_wpa_pid_path(self.ifname)),
+                ],
+                timeout=15.0,
+            )
+            is not None
+        )
+        associated = started and self._wait_for_association(ssid, timeout=_STATION_ASSOC_TIMEOUT_S)
+        leased = associated and (
+            _run(["dhclient", "-1", "-timeout", "20", self.ifname], timeout=25.0) is not None
+        )
+        duration_ms = int((time.monotonic() - start) * 1000)
+        if not leased:
+            log.warning(
+                "Wi-Fi station connect did not complete",
+                extra={
+                    "workflow": "wan_wifi_connect",
+                    "state": "failed",
+                    "intent": "join a Wi-Fi network as the WAN station link",
+                    "ifname": self.ifname,
+                    "ssid": ssid,
+                    "wpa_supplicant_started": started,
+                    "associated": bool(associated),
+                    "duration_ms": duration_ms,
+                    "reason": "wpa_supplicant failed to start"
+                    if not started
+                    else "did not associate within timeout"
+                    if not associated
+                    else "dhclient did not obtain a lease",
+                },
+            )
+            self.disconnect_station()
+            return False
+        log.info(
+            "Wi-Fi station connected",
+            extra={
+                "workflow": "wan_wifi_connect",
+                "state": "completed",
+                "intent": "join a Wi-Fi network as the WAN station link",
+                "ifname": self.ifname,
+                "ssid": ssid,
+                "duration_ms": duration_ms,
+            },
+        )
+        return True
+
+    def _wait_for_association(self, ssid: str, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            link = self.station_link()
+            if link and link.ssid == ssid:
+                return True
+            time.sleep(1.0)
+        return False
 
     def disconnect_station(self) -> None:
-        _run(["nmcli", "dev", "disconnect", self.ifname])
+        pid_text = _read(_wpa_pid_path(self.ifname))
+        if pid_text and pid_text.isdigit():
+            _run(["kill", pid_text])
+        else:
+            # No pidfile (nothing we started is running, or it raced/crashed
+            # before writing one) — best-effort cleanup by matching this
+            # interface's own wpa_supplicant invocation. Scoped to "-i
+            # <ifname>" so it cannot touch a supplicant instance on another
+            # interface.
+            _run(["pkill", "-f", f"wpa_supplicant -B -D nl80211 -i {self.ifname} "])
+        with contextlib.suppress(FileNotFoundError, OSError):
+            _wpa_pid_path(self.ifname).unlink()
+        _run(["ip", "addr", "flush", "dev", self.ifname])
 
     def capabilities(self) -> RadioCapabilities:
         """Probe what the radio can do.
@@ -179,6 +327,67 @@ def _freq_to_channel(mhz: int) -> int:
     if mhz == 2484:
         return 14
     return 0
+
+
+#: ``iw dev <ifname> scan`` prints one block per BSS, starting with a line
+#: like ``BSS aa:bb:cc:dd:ee:ff(on wlan0)`` (sometimes with a trailing
+#: ``-- associated`` marker), followed by indented ``key: value`` lines for
+#: that BSS until the next ``BSS `` line or end of output.
+_SCAN_BSS_RE = re.compile(r"^BSS\s+([0-9a-fA-F:]{17})")
+
+
+def _parse_scan_dump(out: str) -> list[ScannedNetwork]:
+    """Parse ``iw dev <ifname> scan`` output into ``ScannedNetwork`` entries.
+
+    Pure string parsing, unit-tested against a synthetic fixture built from
+    ``iw``'s documented output format — see docs/active-tests.md, this does
+    not stand in for having run a real scan on the actual chip.
+    """
+    networks: list[ScannedNetwork] = []
+    bssid: str | None = None
+    ssid: str | None = None
+    freq = 0
+    signal_dbm = 0
+    secured = False
+
+    def flush() -> None:
+        if bssid and ssid:
+            networks.append(
+                ScannedNetwork(
+                    ssid=ssid,
+                    bssid=bssid.lower(),
+                    channel=_freq_to_channel(freq),
+                    signal_dbm=signal_dbm,
+                    secured=secured,
+                )
+            )
+
+    for raw_line in out.splitlines():
+        line = raw_line.strip()
+        bss_match = _SCAN_BSS_RE.match(line)
+        if bss_match:
+            flush()
+            bssid = bss_match.group(1)
+            ssid, freq, signal_dbm, secured = None, 0, 0, False
+            continue
+        if bssid is None:
+            continue
+        if line.startswith("freq:"):
+            with contextlib.suppress(ValueError, IndexError):
+                freq = int(line.split(":", 1)[1].strip().split()[0])
+        elif line.startswith("signal:"):
+            with contextlib.suppress(ValueError, IndexError):
+                # e.g. "signal: -52.00 dBm"
+                signal_dbm = int(float(line.split(":", 1)[1].strip().split()[0]))
+        elif line.startswith("SSID:"):
+            # Hidden networks emit "SSID: " with nothing after the colon;
+            # leave ssid as None (falsy) so flush() drops them, same as the
+            # old nmcli-based parser did.
+            ssid = line.split(":", 1)[1].strip() or None
+        elif line.startswith(("RSN:", "WPA:")):
+            secured = True
+    flush()
+    return networks
 
 
 class LinuxAp(ApHal):

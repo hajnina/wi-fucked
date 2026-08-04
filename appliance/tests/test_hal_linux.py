@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from wifucked.hal.linux import _classify_interface, _net_interface_for
+from wifucked.hal.linux import _classify_interface, _net_interface_for, _parse_scan_dump
 
 
 def _write_descriptor(iface_dir: Path, usb_class: str, subclass: str, protocol: str = "00") -> None:
@@ -84,3 +84,76 @@ class TestNetInterfaceFor:
 
         assert ifname is None
         assert is_tether is False
+
+
+# ``iw dev <ifname> scan`` output, as documented by ``iw``'s own scan.c
+# formatting and widely-observed real dumps. This is a hand-built fixture,
+# not a capture from a running Pi Zero 2W — see docs/active-tests.md, the
+# parser logic is what's confirmed here, not driver behaviour.
+_SAMPLE_SCAN_DUMP = """\
+BSS aa:bb:cc:11:22:33(on wlan0) -- associated
+\tTSF: 123456789 usec (1d, 10:17:36)
+\tfreq: 2437
+\tbeacon interval: 100 TUs
+\tcapability: ESS Privacy ShortSlotTime (0x0411)
+\tsignal: -52.00 dBm
+\tlast seen: 120 ms ago
+\tSSID: Hotel WiFi
+\tSupported rates: 1.0* 2.0* 5.5* 11.0* 18.0 24.0 36.0 54.0
+\tRSN:\t * Version: 1
+\t\t * Group cipher: CCMP
+\t\t * Pairwise ciphers: CCMP
+\t\t * Authentication suites: PSK
+\t\t * Capabilities: (0x0000)
+BSS dd:ee:ff:44:55:66(on wlan0)
+\tTSF: 987654321 usec (2d, 03:02:11)
+\tfreq: 2462
+\tbeacon interval: 100 TUs
+\tcapability: ESS ShortSlotTime (0x0401)
+\tsignal: -71.00 dBm
+\tlast seen: 340 ms ago
+\tSSID: Campsite
+\tSupported rates: 1.0* 2.0* 5.5* 11.0* 18.0 24.0 36.0 54.0
+BSS 11:22:33:44:55:66(on wlan0)
+\tfreq: 2412
+\tsignal: -80.00 dBm
+\tlast seen: 500 ms ago
+\tSSID:\x20
+"""
+
+
+class TestParseScanDump:
+    def test_parses_multiple_bss_blocks(self):
+        networks = _parse_scan_dump(_SAMPLE_SCAN_DUMP)
+
+        by_ssid = {n.ssid: n for n in networks}
+        assert set(by_ssid) == {"Hotel WiFi", "Campsite"}
+
+    def test_secured_network_has_rsn_block(self):
+        networks = _parse_scan_dump(_SAMPLE_SCAN_DUMP)
+        hotel = next(n for n in networks if n.ssid == "Hotel WiFi")
+
+        assert hotel.bssid == "aa:bb:cc:11:22:33"
+        assert hotel.channel == 6
+        assert hotel.signal_dbm == -52
+        assert hotel.secured is True
+
+    def test_open_network_without_rsn_or_wpa_is_unsecured(self):
+        networks = _parse_scan_dump(_SAMPLE_SCAN_DUMP)
+        campsite = next(n for n in networks if n.ssid == "Campsite")
+
+        assert campsite.bssid == "dd:ee:ff:44:55:66"
+        assert campsite.channel == 11
+        assert campsite.signal_dbm == -71
+        assert campsite.secured is False
+
+    def test_hidden_ssid_is_dropped(self):
+        networks = _parse_scan_dump(_SAMPLE_SCAN_DUMP)
+
+        assert all(n.bssid != "11:22:33:44:55:66" for n in networks)
+
+    def test_empty_output_returns_no_networks(self):
+        assert _parse_scan_dump("") == []
+
+    def test_no_bss_lines_returns_no_networks(self):
+        assert _parse_scan_dump("command line reported nothing useful\n") == []

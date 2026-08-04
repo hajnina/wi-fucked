@@ -170,6 +170,74 @@ move on real hardware as a live experiment, not a known-working feature.
 
 ---
 
+### Wi-Fi-as-WAN via iw/wpa_supplicant instead of nmcli
+
+**Status:** `UNCONFIRMED`
+**Touches:** `appliance/src/wifucked/hal/linux.py` (`LinuxWifi.scan`,
+`LinuxWifi.connect_station`, `LinuxWifi.disconnect_station`), `appliance/apt_deps.txt`
+(`iw`, `wpasupplicant`, `isc-dhcp-client`)
+**Related:** [`radio-spike.md`](radio-spike.md) Q1, backlog item 14
+(`docs/backlog/traffic-blockers.md`), the "AP+STA SHARED profile, CSA
+channel-following" entry above
+
+**What actually runs today:** `wlan0*` is `unmanaged-devices` for
+NetworkManager (`setup_rpi.sh`, so hostapd can own the AP radio undisturbed —
+ADR-011), which meant `nmcli`-based `scan()`/`connect_station()` silently
+failed on this interface and `_discover_wifi()` never found a Wi-Fi WAN to
+offer. This PR reimplements both directly:
+- `scan()` runs `iw dev wlan0 scan` and parses the BSS-block dump format
+  (`_parse_scan_dump`).
+- `connect_station()` writes a scoped `wpa_supplicant` config to the tmpfs
+  runtime dir (`/run/wifucked`), starts a detached `wpa_supplicant -i wlan0`
+  bound only to that interface, polls `station_link()` (already `iw`-based)
+  for association, then runs `dhclient -1` for an address.
+- `disconnect_station()` kills that `wpa_supplicant` via its pidfile and
+  flushes the interface's address.
+
+Both of these now execute for real whenever real hardware discovers a Wi-Fi
+network and the allocator asks it to connect — this is live in
+`_discover_wifi()` / `build_linux_hal()`, not gated behind anything.
+
+**What is unconfirmed:**
+- Whether `iw scan` / `wpa_supplicant` can even run against `wlan0` *while
+  hostapd also holds `wlan0` for the AP* — this is exactly `radio-spike.md`
+  Q1 (AP+STA concurrency), which is still `NOT YET RUN`. If the chip cannot
+  do AP+STA concurrently, this code path either fails harmlessly (scan
+  returns nothing, connect never associates) or — the case nobody has
+  observed — disrupts the AP while attempting to.
+- The `iw dev <ifname> scan` parser (`_parse_scan_dump`) is unit-tested only
+  against a hand-built fixture matching `iw`'s documented output format, not
+  a real capture from this chip's driver/firmware.
+- The `wpa_supplicant` + `dhclient` connect flow has never been run on a
+  device — timing (association wait, DHCP lease time), whether `nl80211`
+  driver selection is right for `brcmfmac`, and whether the pidfile-based
+  `disconnect_station()` cleanup actually kills the right process, are all
+  unverified.
+
+**Built-in fallback if it fails:** `connect_station()` cleans up after
+itself (`disconnect_station()`) on any failed step and returns `False`;
+`_discover_wifi()` and the allocator already treat "no networks" / "connect
+failed" as ordinary absence, not a crash. Worst case if AP+STA concurrency
+doesn't work at all: Wi-Fi-as-WAN never engages (same net effect as before
+this fix, `_discover_wifi()` returning nothing), or, unconfirmed and worse,
+an active connect attempt disrupts the AP's own radio state while hostapd is
+using it — this is the scenario Q1 exists to rule in or out before anyone
+trusts SHARED profile in the field.
+
+**Next step:** run `radio-spike.md` Q1 first — it gates whether this code
+path is safe to exercise at all with the AP live. Then, on a device with the
+image built from this change, force a scan (unplug other WANs so
+Wi-Fi-as-WAN is the connection under test) and confirm: `scan()` returns real
+networks, `connect_station()` associates and gets an address, and the AP
+(watch `hostapd_cli list_sta`) does not drop clients during any of it.
+
+**History:**
+- 2026-08-04 — implemented in response to backlog item 14; parser logic
+  unit-tested against a synthetic fixture, full connect/disconnect flow not
+  yet run against real hardware by anyone.
+
+---
+
 ## Template for new entries
 
 ```markdown
