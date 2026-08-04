@@ -142,7 +142,7 @@ traverses the chosen path and survives a simulated WAN swap.
 Needs a scenario test — reuse the fixed harness from item 3.
 
 ### 7. fix(daemon): thread-safe registry/telemetry access
-**Status:** in progress
+**Status:** PR #36
 
 `__main__.py` (~60, ~91) runs the loop thread and Flask `threaded=True`
 concurrently against unguarded shared state: `Registry._atomics` (mutated by
