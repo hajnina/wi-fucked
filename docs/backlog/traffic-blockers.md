@@ -63,7 +63,7 @@ a bare `COPY src/ src/`. Verify `fabric_compatible()` passes against the
 baked `WIFUCKED_FABRIC_MIN`.
 
 ### 2. fix(daemon): feed or remove the systemd watchdog
-**Status:** not started
+**Status:** in progress
 
 `wifucked.service:25` sets `WatchdogSec=120` with no `sd_notify`/
 `WATCHDOG=1` anywhere and no `NotifyAccess=`. Either add a keepalive
