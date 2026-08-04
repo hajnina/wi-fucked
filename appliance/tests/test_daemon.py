@@ -473,6 +473,23 @@ class TestApi:
         response = client.post("/api/atomics/nope/mode", json={"mode": "normal"})
         assert response.status_code == 404
 
+    def test_decisions_endpoint(self, client):
+        response = client.get("/api/decisions")
+        assert response.status_code == 200
+        assert isinstance(response.get_json(), list)
+
+    def test_decisions_rejects_non_numeric_limit(self, client):
+        """A malformed `limit` must not produce a bare Flask 500."""
+        response = client.get("/api/decisions?limit=abc")
+        assert response.status_code == 400
+        assert "error" in response.get_json()
+
+    def test_decisions_rejects_non_numeric_limit_with_valid_json_body(self, client):
+        response = client.get("/api/decisions?limit=not-a-number")
+        payload = response.get_json()
+        assert payload is not None
+        assert "error" in payload
+
     def test_dashboard_renders(self, client):
         response = client.get("/")
         assert response.status_code == 200

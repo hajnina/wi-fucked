@@ -25,6 +25,9 @@ class Kind(enum.StrEnum):
     WIFI = "wifi"
     USB_TETHER = "usb_tether"
     USB_ETHERNET = "usb_ethernet"
+    #: Non-USB (onboard or add-on) Ethernet. Not the Zero 2W's base BOM, but
+    #: the model is N connections, not one — see discovery.ethernet_atomic.
+    ETHERNET = "ethernet"
     CELLULAR = "cellular"
 
 

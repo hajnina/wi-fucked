@@ -111,6 +111,22 @@ class TestPersistence:
         assert atomic.cost.consumed_bytes == 1024
         assert atomic.cost.liveness_bytes == 300
 
+    def test_round_trips_an_ethernet_kind_atomic(self, tmp_path):
+        """Backlog item 13: `Kind.ETHERNET` (non-USB Ethernet) must round-trip
+        through persist/_load like any other kind."""
+        path = tmp_path / "atomics.json"
+        registry = Registry(VirtualClock(), path)
+        atomic = _atomic("ethernet:onboard", kind=Kind.ETHERNET, label="Onboard Ethernet")
+        registry.observe([atomic])
+        registry.set_mode("ethernet:onboard", Mode.NORMAL)
+        registry.persist()
+
+        restored = Registry(VirtualClock(), path)
+        atomic = restored.get("ethernet:onboard")
+
+        assert atomic is not None
+        assert atomic.kind is Kind.ETHERNET
+
     def test_does_not_persist_volatile_state(self):
         """Presence and ifname are rediscovered; storing them would be a lie."""
         clock = VirtualClock()

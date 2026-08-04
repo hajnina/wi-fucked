@@ -312,6 +312,7 @@ class Daemon:
         for atomic in self.registry.backups():
             if not self.allocator.due_for_liveness(atomic):
                 continue
+            self.allocator.mark_liveness_probed(atomic)
             spent = self.config.thresholds.liveness_bytes
             self.registry.add_cost(atomic.id, liveness=spent)
             log.info(

@@ -107,7 +107,21 @@ def create_app(daemon: Daemon, api_token: str = "") -> Flask:
 
     @app.get("/api/decisions")
     def api_decisions():
-        limit = min(int(request.args.get("limit", 50)), 500)
+        raw = request.args.get("limit", "50")
+        try:
+            limit = min(int(raw), 500)
+        except ValueError:
+            log.warning(
+                "Rejected non-numeric decisions limit",
+                extra={
+                    "workflow": "api_decisions",
+                    "state": "failed",
+                    "intent": "serve the requested number of recent decision records",
+                    "reason": f"non-numeric limit {raw!r}",
+                    "ip": request.remote_addr,
+                },
+            )
+            return jsonify({"error": f"invalid limit {raw!r}"}), 400
         return jsonify([d.to_dict() for d in daemon.telemetry.recent_decisions(limit)])
 
     @app.get("/api/health")
