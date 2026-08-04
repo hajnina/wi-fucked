@@ -27,6 +27,7 @@ from wifucked.enforce import (
     Shaping,
     _close,
     _parse_rate,
+    _table_for_atomic,
     render,
 )
 from wifucked.policy import BEST_EFFORT, CRITICAL
@@ -72,11 +73,53 @@ def test_render_marks_are_independent_of_active_shares():
     # Best-effort has no share, but its mark must still be present.
     assert (BEST_EFFORT.vlan, BEST_EFFORT.vlan) in desired.marks
     assert (CRITICAL.vlan, CRITICAL.vlan) in desired.marks
-    # Routes remain allocation-derived.
-    assert RouteRule(fwmark=CRITICAL.vlan, table=100, ifname="wlan0") in desired.routes
+    # Routes remain allocation-derived, on this atomic's own table.
+    assert (
+        RouteRule(fwmark=CRITICAL.vlan, table=_table_for_atomic(atomic.id), ifname="wlan0")
+        in desired.routes
+    )
     assert any(
         s.ifname == "wlan0" and s.down_bps == int(10_000_000 * 0.95) for s in desired.shaping
     )
+
+
+def test_render_derives_a_distinct_table_per_atomic():
+    a = _atomic(ifname="wlan0")
+    b = Atomic(
+        id="atomic-b",
+        kind=Kind.USB_TETHER,
+        label="phone",
+        mode=Mode.BACKUP,
+        ifname="usb0",
+        present=True,
+        capacity=Capacity(down_bps=20_000_000, up_bps=8_000_000, confidence=0.9, measured_at=0.0),
+    )
+    alloc = Allocation(
+        primary_id=a.id,
+        backup_active=True,
+        shares=(
+            Share(a.id, CRITICAL.name, 5_000_000),
+            Share(b.id, CRITICAL.name, 5_000_000),
+        ),
+    )
+    desired = render(alloc, {a.id: a, b.id: b})
+
+    tables = {r.ifname: r.table for r in desired.routes}
+    assert tables["wlan0"] != tables["usb0"]
+    assert tables["wlan0"] == _table_for_atomic(a.id)
+    assert tables["usb0"] == _table_for_atomic(b.id)
+
+
+def test_render_skips_zero_ceiling_shares():
+    atomic = _atomic()
+    alloc = Allocation(
+        primary_id=atomic.id,
+        backup_active=False,
+        shares=(Share(atomic.id, CRITICAL.name, 0),),
+    )
+    desired = render(alloc, {atomic.id: atomic})
+
+    assert desired.routes == ()
 
 
 # -- nftables ruleset construction -------------------------------------------
@@ -125,8 +168,11 @@ def test_apply_cake_argv():
         return _completed()
 
     with patch("wifucked.enforce.subprocess.run", side_effect=fake):
+        # `tc qdisc ... root` shapes egress, which is bounded by upload
+        # capacity — `down_bps` here is deliberately different from
+        # `up_bps` so this test would fail if the wrong field were used.
         LinuxEnforcer()._apply_cake(
-            Shaping("wlan0", down_bps=9_500_000, up_bps=0, diffserv="diffserv4")
+            Shaping("wlan0", down_bps=1_000_000, up_bps=9_500_000, diffserv="diffserv4")
         )
 
     assert calls[0] == [
@@ -224,8 +270,11 @@ def test_actual_parses_real_kernel_json():
         state = LinuxEnforcer().actual()
 
     assert state is not None
+    # CAKE reports the single egress rate it actually shapes, which
+    # `_apply_cake` programs from `up_bps` — `down_bps` isn't observable
+    # from `tc` (no IFB device shapes ingress; see `_apply_cake`).
     assert (
-        Shaping(ifname="wlan0", down_bps=95_000_000, up_bps=0, diffserv="diffserv4")
+        Shaping(ifname="wlan0", down_bps=0, up_bps=95_000_000, diffserv="diffserv4")
         in state.shaping
     )
     assert (10, 10) in state.marks
@@ -256,10 +305,11 @@ def _reconcile_dispatch(applied: list[list[str]]):
 
 
 def test_reconcile_is_a_noop_when_kernel_already_matches():
-    # Matches what _read_dispatch reports, except up_bps (not observable from
-    # CAKE) and a sub-1% down_bps rounding — both must be tolerated.
+    # Matches what _read_dispatch reports, except down_bps (not observable
+    # from CAKE — see `_apply_cake`) and a sub-1% up_bps rounding — both
+    # must be tolerated.
     desired = DesiredState(
-        shaping=(Shaping("wlan0", down_bps=95_400_000, up_bps=500_000, diffserv="diffserv4"),),
+        shaping=(Shaping("wlan0", down_bps=500_000, up_bps=95_400_000, diffserv="diffserv4"),),
         routes=(RouteRule(10, 100, "usb0"), RouteRule(20, 100, "usb0")),
         marks=((10, 10), (20, 20)),
     )

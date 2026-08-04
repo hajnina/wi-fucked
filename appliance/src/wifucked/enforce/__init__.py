@@ -21,6 +21,7 @@ WS-D owns this module.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import time
@@ -39,6 +40,32 @@ log = get_logger("enforce")
 #: lives here so the whole ruleset can be replaced atomically without touching
 #: anyone else's rules.
 _TABLE = "wifucked"
+
+#: Policy-routing table numbers are handed out per atomic, not shared. Base of
+#: the range and its width — 900 tables is comfortably beyond any realistic
+#: atomic count and keeps the numbers away from low-numbered tables reserved
+#: by the kernel (``local``/``main``/``default`` = 255/254/253) and anything an
+#: operator might hand-add near the bottom of the space.
+_TABLE_BASE = 100
+_TABLE_SPAN = 900
+
+
+def _table_for_atomic(atomic_id: str) -> int:
+    """Deterministic, collision-resistant routing table number for one atomic.
+
+    Derived from a stable hash of the atomic's id (ADR-002 identity — never
+    `ifname`), not assigned sequentially. Sequential assignment would require
+    remembering an id -> table mapping across ticks and restarts to stay
+    stable for a given atomic; hashing the id directly gives the same table
+    every time, for every process, with no state to carry. `hash()` is not
+    used here because Python randomizes string hashing per-process
+    (`PYTHONHASHSEED`), which would reassign every atomic's table on every
+    daemon restart — wasteful (old rules become orphaned "leftover state",
+    permitted by ADR-008 but pointless to create) even though not unsafe.
+    `sha256` has no such randomization.
+    """
+    digest = hashlib.sha256(atomic_id.encode()).hexdigest()
+    return _TABLE_BASE + (int(digest, 16) % _TABLE_SPAN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,8 +117,25 @@ def render(
     # traffic unclassified the moment an atomic appeared to steer it.
     marks: list[tuple[int, int]] = [(p.vlan, p.vlan) for p in profiles]
 
-    table = 100
     for share in allocation.shares:
+        if share.ceiling_bps == 0:
+            # "0 means not routed here" (Share's own docstring) — installing a
+            # route anyway would steer a profile's traffic onto an atomic the
+            # allocator explicitly decided should carry none of it (e.g. a
+            # best-effort class that isn't permitted to use BACKUP).
+            continue
+        # The allocator's contract (`allocator._build`) is that a quiesced
+        # atomic never appears in `shares` at all — quiescing and sharing are
+        # mutually exclusive outcomes for a given atomic on a given tick. This
+        # check makes that contract load-bearing here rather than merely
+        # assumed: if it ever breaks, `render()` fails loudly instead of
+        # silently installing a route for traffic that was supposed to be
+        # withheld.
+        if share.atomic_id in allocation.quiesced:
+            raise ValueError(
+                f"atomic {share.atomic_id!r} is both quiesced and shared — "
+                "allocator contract violated"
+            )
         atomic = atomics.get(share.atomic_id)
         if atomic is None or not atomic.ifname:
             continue
@@ -99,6 +143,7 @@ def render(
         if profile is None:
             continue
         fwmark = profile.vlan
+        table = _table_for_atomic(share.atomic_id)
         routes.append(RouteRule(fwmark=fwmark, table=table, ifname=atomic.ifname))
 
     for atomic_id in {s.atomic_id for s in allocation.shares}:
@@ -247,9 +292,17 @@ class LinuxEnforcer(Enforcer):
             # CAKE renders the shaped rate to a rounded string (e.g. "95Mbit"),
             # so an exact bit-for-bit comparison would rarely converge. Compare
             # within a tolerance and re-shape only on a meaningful change.
+            #
+            # `_apply_cake` programs `up_bps` (egress is bounded by upload
+            # capacity, see `_apply_cake`'s docstring), and `_read_shaping`
+            # reads that same applied rate back into `up_bps` — so the
+            # convergence check must compare `up_bps`, not `down_bps`.
+            # `down_bps` isn't actually enforced by anything in this codebase
+            # today (no IFB device — see `_apply_cake`), so it can't be read
+            # back or compared.
             if have is None or have.diffserv != want.diffserv:
                 return False
-            if not _close(have.down_bps, want.down_bps):
+            if not _close(have.up_bps, want.up_bps):
                 return False
 
         current_routes = {(r.fwmark, r.table, r.ifname) for r in current.routes}
@@ -262,6 +315,16 @@ class LinuxEnforcer(Enforcer):
     # -- shaping --------------------------------------------------------------
 
     def _apply_cake(self, shaping: Shaping) -> None:
+        # `tc qdisc ... dev <ifname> root` shapes *egress* off this box, which is
+        # bounded by our upload capacity, not our download capacity — using
+        # `down_bps` here shaped the wrong direction entirely. True ingress
+        # (download) shaping isn't implemented anywhere in this codebase: CAKE
+        # can only shape the direction traffic leaves an interface, so shaping
+        # download would need an IFB (Intermediate Functional Block) device to
+        # redirect ingress through an egress qdisc, and nothing here creates
+        # one. Flagged as a known gap (see PR body) rather than added here —
+        # this fix corrects the direction that was actively wrong; adding a
+        # whole new virtual-device lifecycle is a separate change.
         argv = [
             "tc",
             "qdisc",
@@ -271,7 +334,7 @@ class LinuxEnforcer(Enforcer):
             "root",
             "cake",
             "bandwidth",
-            f"{shaping.down_bps}bit",
+            f"{shaping.up_bps}bit",
             shaping.diffserv,
         ]
         if self._dry_run:
@@ -280,9 +343,9 @@ class LinuxEnforcer(Enforcer):
                 extra={
                     "workflow": "enforce_shaping",
                     "state": "skipped",
-                    "intent": "shape egress to measured capacity",
+                    "intent": "shape egress to measured upload capacity",
                     "ifname": shaping.ifname,
-                    "target_bps": shaping.down_bps,
+                    "target_bps": shaping.up_bps,
                     "reason": "dry run",
                 },
             )
@@ -290,9 +353,9 @@ class LinuxEnforcer(Enforcer):
         self._exec(
             argv,
             workflow="enforce_shaping",
-            intent="shape egress to measured capacity",
+            intent="shape egress to measured upload capacity",
             ifname=shaping.ifname,
-            target_bps=shaping.down_bps,
+            target_bps=shaping.up_bps,
         )
 
     # -- marking --------------------------------------------------------------
@@ -438,14 +501,14 @@ class LinuxEnforcer(Enforcer):
                 continue
             dev = qdisc.get("dev")
             options = qdisc.get("options") or {}
-            down_bps = _parse_rate(options.get("bandwidth"))
-            if not dev or down_bps is None:
+            up_bps = _parse_rate(options.get("bandwidth"))
+            if not dev or up_bps is None:
                 continue
             result.append(
                 Shaping(
                     ifname=dev,
-                    down_bps=down_bps,
-                    up_bps=0,  # CAKE shapes a single egress rate; up is not observable.
+                    down_bps=0,  # not enforced anywhere yet — no IFB device, see _apply_cake.
+                    up_bps=up_bps,  # the single egress rate CAKE actually shapes.
                     diffserv=str(options.get("diffserv", "diffserv4")),
                 )
             )
