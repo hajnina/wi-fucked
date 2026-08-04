@@ -53,7 +53,7 @@ not a snapshot. See [SOP-010](../sop/SOP-010-keeping-documentation-current.md).
 ## Items
 
 ### 1. fix(fabric): set real version at build time
-**Status:** in progress
+**Status:** merged
 
 `fabric/src/fabric/__init__.py:12` hardcodes `__version__ = "0.0.0-dev"`.
 Inject the build version the same way the appliance pipeline does (see
