@@ -59,6 +59,21 @@ class LoopConfig:
     #: anchor" guarantee — kept well above medium_s so discovery doesn't scan
     #: on every tick (ADR-011).
     wifi_scan_min_interval_s: float = 120.0
+    #: Wall-clock ceiling on active (ping) probing per medium-loop pass. Active
+    #: probes run on the same thread that later runs the fast loop within the
+    #: same `tick()` call (`daemon.py`'s `tick()` runs medium before fast), so an
+    #: unbounded probe sweep across every NORMAL atomic directly starves
+    #: failover/reconciliation. Atomics not reached before the budget runs out
+    #: are simply probed on the next medium-loop pass ~medium_s later — active
+    #: probing only refines an RTT/loss estimate that decays over
+    #: `CONFIDENCE_HALF_LIFE_S` minutes, so a pass or two of delay is harmless
+    #: (see docs/backlog/traffic-blockers.md item 8, docs/architecture.md).
+    probe_budget_s: float = 2.0
+    #: Per-`ping` subprocess timeout (`probe/__init__.py`'s `_run`). Bounds the
+    #: worst case for a single hung probe process so the budget above can't be
+    #: blown open by one wedged call; comfortably above the ~3s a normal
+    #: `ping -c 3 -W 1` takes even at 100% loss.
+    probe_timeout_s: float = 4.0
 
 
 @dataclass(slots=True)

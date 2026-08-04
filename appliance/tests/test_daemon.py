@@ -205,6 +205,69 @@ class TestProbeSafety:
         assert may_probe_actively(normal) is True
 
 
+class TestFastLoopNotStarvedByProbing:
+    """docs/backlog/traffic-blockers.md item 8. `Daemon.tick()` runs the medium
+    loop (which drives `_measure()`, which drives active probing) before the
+    fast loop, on the same thread — so slow probes used to delay failover and
+    reconciliation directly. Proves that no longer holds, with a real clock and
+    an artificially slow probe.
+    """
+
+    def test_measure_does_not_block_past_the_probe_budget(self, monkeypatch):
+        import time as time_module
+
+        import wifucked.probe as probe_module
+        from wifucked.clock import RealClock
+
+        def slow_run(argv, timeout=10.0):
+            time_module.sleep(0.2)
+            return (
+                "3 packets transmitted, 3 received, 0% packet loss, time 2003ms\n"
+                "rtt min/avg/max/mdev = 12.300/13.133/14.000/0.698 ms\n"
+            )
+
+        monkeypatch.setattr(probe_module, "_run", slow_run)
+
+        clock = RealClock()
+        config = Config()
+        config.loops.probe_budget_s = 0.3
+        config.loops.probe_timeout_s = 4.0
+        daemon = Daemon(
+            config,
+            hal=build_hal(force_mock=True),
+            clock=clock,
+            telemetry=Telemetry(clock, None),
+            prober=LinuxProber(
+                build_hal(force_mock=True),
+                clock,
+                active_probe_budget_s=config.loops.probe_budget_s,
+                active_probe_timeout_s=config.loops.probe_timeout_s,
+            ),
+            persist=False,
+        )
+        daemon.discover_once()
+        # Force every present atomic NORMAL so all of them are eligible for
+        # active probing — the scenario this bug needs many atomics to bite.
+        for atomic in daemon.registry.present():
+            daemon.registry.set_mode(atomic.id, Mode.NORMAL)
+
+        # Seed one passive sample per atomic so the next _measure() pass has a
+        # throughput delta to compute (LinuxProber.observe needs two readings).
+        daemon._measure()
+
+        start = time_module.perf_counter()
+        daemon._measure()
+        elapsed = time_module.perf_counter() - start
+
+        # Budget plus at most one more in-flight slow call, plus generous
+        # scheduling slack — regardless of how many atomics the mock world has.
+        assert elapsed < 1.0, (
+            f"_measure() took {elapsed:.2f}s with a 0.3s probe budget; the fast "
+            "loop, which runs right after this in the same tick(), would have "
+            "been starved"
+        )
+
+
 class TestCapacityEstimation:
     def test_idle_observation_does_not_raise_the_estimate(self):
         """An unused link is not a slow link."""
