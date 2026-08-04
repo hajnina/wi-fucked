@@ -1,0 +1,92 @@
+# Periodic backstop for automerge.yml.
+#
+# automerge.yml is one-shot: it fires exactly once, when the CI workflow_run
+# for a PR's head commit completes, and if GitHub's mergeability check reads
+# "dirty" at that exact instant (e.g. because another PR's merge just
+# rewrote main underneath it during a burst of concurrent merges), it logs
+# "leaving it for manual review" and never runs again for that commit —
+# nothing else re-triggers it. That silently stranded green, clean PRs
+# (#26, #33 — 2026-08-04, found because CI had said everything was fine and
+# nobody was watching for a PR that just... never got merged). Separately,
+# GitHub can drop the `pull_request` webhook entirely under the same kind of
+# burst load, so CI never even starts for some PRs (#27, #29, same
+# incident) — this sweep can't fix that half (no CI means "clean" is never
+# even reachable) but it does mean any PR that recovers on retry, or that a
+# human/agent nudges into having CI again, gets merged automatically without
+# anyone having to remember to check back on it.
+#
+# So: don't rely on the event trigger alone. Every 10 minutes, look at every
+# open PR and merge any that are actually green + clean right now,
+# regardless of why the one-shot path missed it.
+
+name: Automerge Sweep
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Merge every open PR that's actually green and clean right now
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          numbers="$(gh pr list --repo "${REPO}" --state open --json number --jq '.[].number')"
+          if [ -z "${numbers}" ]; then
+            echo "No open PRs."
+            exit 0
+          fi
+
+          while IFS= read -r NUMBER; do
+            [ -z "${NUMBER}" ] && continue
+
+            # Same criteria as automerge.yml's "Merge if clean" step — kept
+            # in sync manually since this only duplicates ~10 lines and a
+            # shared script would obscure step-level output for the common
+            # single-PR case in automerge.yml.
+            state="$(gh pr view "${NUMBER}" --repo "${REPO}" \
+              --json state,isDraft,mergeable,mergeStateStatus)"
+            is_open="$(jq -r '.state == "OPEN"' <<<"${state}")"
+            not_draft="$(jq -r '.isDraft == false' <<<"${state}")"
+            mergeable="$(jq -r '.mergeable == "MERGEABLE"' <<<"${state}")"
+            clean="$(jq -r '.mergeStateStatus == "CLEAN"' <<<"${state}")"
+
+            if [ "${is_open}" != "true" ] || [ "${not_draft}" != "true" ] \
+               || [ "${mergeable}" != "true" ] || [ "${clean}" != "true" ]; then
+              echo "PR #${NUMBER}: not clean yet (open=${is_open} not_draft=${not_draft} mergeable=${mergeable} clean=${clean}); skipping."
+              continue
+            fi
+
+            echo "PR #${NUMBER}: clean and mergeable — merging."
+            gh pr merge "${NUMBER}" --repo "${REPO}" --squash --delete-branch
+
+            # Mirrors automerge.yml's touched-path replication of
+            # main_release.yml's own `paths:` filter — workflow_dispatch
+            # bypasses that filter, so this must be checked explicitly or
+            # every merge (docs-only included) would bake a release.
+            files="$(gh pr view "${NUMBER}" --repo "${REPO}" --json files --jq '.files[].path')"
+            match=false
+            while IFS= read -r f; do
+              case "${f}" in
+                appliance/*|fabric/*|scripts/*|.github/workflows/*|.github/builder.Dockerfile|run_all_tests.sh)
+                  match=true
+                  ;;
+              esac
+            done <<<"${files}"
+
+            if [ "${match}" = "true" ]; then
+              echo "PR #${NUMBER}: touched a buildable path — dispatching main_release.yml."
+              gh workflow run main_release.yml --repo "${REPO}" --ref main
+            fi
+          done <<<"${numbers}"
