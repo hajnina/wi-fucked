@@ -8,7 +8,9 @@ without ever touching a kernel interface name as identity (ADR-002).
 from __future__ import annotations
 
 from wifucked.atomics.model import Health, Kind, Mode
-from wifucked.discovery import discover
+from wifucked.clock import VirtualClock
+from wifucked.discovery import DEFAULT_WIFI_SCAN_MIN_INTERVAL_S, Discoverer, discover
+from wifucked.hal.base import ScannedNetwork
 from wifucked.hal.mock import build_mock_hal
 
 
@@ -63,3 +65,76 @@ def test_usb_device_without_carrier_is_down():
 
     tether = next(a for a in atomics if a.kind is Kind.USB_TETHER)
     assert tether.health is Health.DOWN
+
+
+def test_connected_matching_requires_bssid_not_just_ssid():
+    """Two different APs sharing an SSID (ADR-002) must not both read connected.
+
+    Bug 2: matching only on SSID would mark both "Hotel WiFi" networks as
+    connected once the station link associated with one of them.
+    """
+    hal = build_mock_hal()
+    # A second, distinct access point broadcasting the same SSID as the one
+    # the station is actually associated with.
+    hal.wifi.networks.append(ScannedNetwork("Hotel WiFi", "ff:ff:ff:11:22:33", 1, -80))
+
+    atomics = discover(hal)
+
+    same_ssid = [a for a in atomics if a.kind is Kind.WIFI and a.attributes["ssid"] == "Hotel WiFi"]
+    assert len(same_ssid) == 2
+    connected = [a for a in same_ssid if a.attributes["connected"] == "yes"]
+    assert len(connected) == 1, "only the actually-associated BSSID may read connected"
+    assert connected[0].id != same_ssid[0].id or connected[0] is same_ssid[0]
+    not_connected = [a for a in same_ssid if a.attributes["connected"] == "no"]
+    assert len(not_connected) == 1
+    assert not_connected[0].health is Health.UNKNOWN
+    assert not_connected[0].ifname is None
+
+
+class TestDiscovererScanCadence:
+    """Fix 3: gate the AP-radio-sharing Wi-Fi scan to a slow, clock-based cadence."""
+
+    def test_reuses_last_scan_within_the_minimum_interval(self):
+        hal = build_mock_hal()
+        clock = VirtualClock()
+        discoverer = Discoverer(clock, wifi_scan_min_interval_s=60.0)
+
+        first = discoverer.discover(hal)
+
+        # Change what the radio would report; a throttled scan must not see it.
+        hal.wifi.networks.append(ScannedNetwork("New Network", "11:22:33:44:55:66", 3, -40))
+        clock.advance(30.0)
+        second = discoverer.discover(hal)
+
+        wifi_first = {a.id for a in first if a.kind is Kind.WIFI}
+        wifi_second = {a.id for a in second if a.kind is Kind.WIFI}
+        assert wifi_second == wifi_first, "scan must not re-run before the minimum interval"
+
+    def test_scans_again_once_the_minimum_interval_elapses(self):
+        hal = build_mock_hal()
+        clock = VirtualClock()
+        discoverer = Discoverer(clock, wifi_scan_min_interval_s=60.0)
+
+        discoverer.discover(hal)
+        hal.wifi.networks.append(ScannedNetwork("New Network", "11:22:33:44:55:66", 3, -40))
+        clock.advance(61.0)
+        atomics = discoverer.discover(hal)
+
+        assert any(a.label == "New Network" for a in atomics if a.kind is Kind.WIFI)
+
+    def test_usb_discovery_is_never_throttled(self):
+        """Only the radio scan is gated; USB enumeration has no off-channel risk."""
+        hal = build_mock_hal()
+        clock = VirtualClock()
+        discoverer = Discoverer(clock, wifi_scan_min_interval_s=1000.0)
+
+        discoverer.discover(hal)
+        hal.usb.attached.append(hal.usb.spare_ethernet_adapter)
+        clock.advance(1.0)
+        atomics = discoverer.discover(hal)
+
+        assert any(a.kind is Kind.USB_ETHERNET for a in atomics)
+
+    def test_default_min_interval_is_slower_than_the_medium_loop(self):
+        """Backlog item 10: the ~10s medium loop must not drive off-channel scans."""
+        assert DEFAULT_WIFI_SCAN_MIN_INTERVAL_S > 10.0

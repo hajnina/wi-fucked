@@ -174,7 +174,7 @@ LAN-only bind) consistent with that architecture doc; adjust the doc if the
 chosen mechanism differs from what it currently implies.
 
 ### 10. fix(discovery): dedupe SSID-only atomics, stop wearing the SD card
-**Status:** not started
+**Status:** in progress
 
 `discovery/__init__.py` (~51-70, ~52, and the ~10s AP-radio scan): every
 visible SSID becomes a permanent persisted `Atomic`, and `persist()`

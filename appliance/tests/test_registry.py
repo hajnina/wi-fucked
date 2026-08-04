@@ -154,3 +154,73 @@ class TestPersistence:
 def test_unknown_atomic_mode_change_is_survivable():
     registry = Registry(VirtualClock())
     assert registry.set_mode("nope", Mode.NORMAL) is None
+
+
+class TestBoundedPersistence:
+    """Bug 1: every scanned SSID must not become a permanent persisted row.
+
+    Only atomics the user classified (mode != UNUSED) or that were genuinely
+    connected to at least once (``ever_connected``) earn a place in the
+    persisted file (ADR-010: bounded by construction, not by a cleanup job).
+    """
+
+    def test_never_connected_unclassified_atomics_are_not_persisted(self, tmp_path):
+        path = tmp_path / "atomics.json"
+        clock = VirtualClock()
+        registry = Registry(clock, path)
+
+        # Simulate many scanned-but-never-joined SSIDs arriving over a long
+        # uptime, one medium-loop tick at a time.
+        for i in range(500):
+            registry.observe(
+                [_atomic(f"wifi:seen-{i}", label=f"Network {i}", ever_connected=False)]
+            )
+            clock.advance(10.0)
+            registry.persist()
+
+        assert len(registry.all()) == 500, "in-memory state still tracks everything present"
+
+        payload = json.loads(path.read_text())
+        assert payload["atomics"] == {}, "unclassified, never-connected SSIDs must not be written"
+
+    def test_ever_connected_atomic_is_persisted_even_if_still_unclassified(self, tmp_path):
+        path = tmp_path / "atomics.json"
+        registry = Registry(VirtualClock(), path)
+        registry.observe([_atomic("wifi:home", ever_connected=True)])
+
+        registry.persist()
+
+        payload = json.loads(path.read_text())
+        assert "wifi:home" in payload["atomics"]
+        assert registry.get("wifi:home").mode is Mode.UNUSED, "connection was never classified"
+
+    def test_ever_connected_stays_true_once_the_link_drops(self, tmp_path):
+        """A radio going out of range must not un-persist a previously-used network."""
+        path = tmp_path / "atomics.json"
+        registry = Registry(VirtualClock(), path)
+        registry.observe([_atomic("wifi:home", ever_connected=True)])
+        registry.observe([_atomic("wifi:home", ever_connected=False)])  # scan sees it, not joined
+
+        registry.persist()
+
+        payload = json.loads(path.read_text())
+        assert "wifi:home" in payload["atomics"]
+
+    def test_bound_survives_a_restart(self, tmp_path):
+        path = tmp_path / "atomics.json"
+        registry = Registry(VirtualClock(), path)
+        registry.observe(
+            [
+                _atomic("wifi:home", ever_connected=True),
+                _atomic("wifi:never-joined", ever_connected=False),
+            ]
+        )
+        registry.persist()
+
+        restored = Registry(VirtualClock(), path)
+        assert restored.get("wifi:home") is not None
+        assert restored.get("wifi:never-joined") is None
+        # And the bound keeps holding after a reboot, not just before one.
+        restored.persist()
+        payload = json.loads(path.read_text())
+        assert list(payload["atomics"]) == ["wifi:home"]

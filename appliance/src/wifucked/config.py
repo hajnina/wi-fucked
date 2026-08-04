@@ -52,6 +52,12 @@ class LoopConfig:
     fast_s: float = 1.0
     medium_s: float = 10.0
     slow_s: float = 300.0
+    #: Minimum time between active Wi-Fi scans, independent of medium_s. On the
+    #: Zero 2W's single shared radio an active scan typically has to leave the
+    #: AP's serving channel briefly, which cuts against ADR-011's "AP is the
+    #: anchor" guarantee — kept well above medium_s so discovery doesn't scan
+    #: on every tick (ADR-011).
+    wifi_scan_min_interval_s: float = 120.0
 
 
 @dataclass(slots=True)

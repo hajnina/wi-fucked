@@ -88,6 +88,11 @@ class Registry:
                 present=True,
                 last_seen=now,
                 health=fresh.health if was_absent else known.health,
+                # Sticky: once actually connected to, always considered so —
+                # a later scan reporting "not connected right now" must not
+                # erase that this atomic is worth remembering (persist() below
+                # relies on this to bound what gets written to disk).
+                ever_connected=known.ever_connected or fresh.ever_connected,
             )
             if was_absent:
                 log.info(
@@ -194,10 +199,22 @@ class Registry:
     #
     # Only the remembered fields are stored. Presence and ifname are rediscovered
     # on every start; writing them would just be a lie waiting to be read back.
+    #
+    # What gets a row at all is bounded (ADR-010): every SSID the radio has ever
+    # scanned would otherwise become a permanent entry, growing the file forever
+    # and wearing the SD card on every rewrite. An atomic only earns persistence
+    # once the user has actually decided something about it (`mode != UNUSED`)
+    # or it was genuinely connected to at least once (`ever_connected`) — a
+    # network glimpsed once and never joined is dropped from the write, though
+    # it stays in the in-memory registry for as long as the process runs.
+
+    def _worth_persisting(self, atomic: Atomic) -> bool:
+        return atomic.mode is not Mode.UNUSED or atomic.ever_connected
 
     def persist(self) -> None:
         if not self._state_path:
             return
+        candidates = [a for a in self._atomics.values() if self._worth_persisting(a)]
         payload = {
             "version": 1,
             "atomics": {
@@ -205,6 +222,7 @@ class Registry:
                     "kind": str(atomic.kind),
                     "label": atomic.label,
                     "mode": str(atomic.mode),
+                    "ever_connected": atomic.ever_connected,
                     "capacity": {
                         "down_bps": atomic.capacity.down_bps,
                         "up_bps": atomic.capacity.up_bps,
@@ -218,9 +236,20 @@ class Registry:
                     },
                     "attributes": atomic.attributes,
                 }
-                for atomic in self._atomics.values()
+                for atomic in candidates
             },
         }
+        log.info(
+            "Persisting atomic registry",
+            extra={
+                "workflow": "registry_persist",
+                "state": "processing",
+                "intent": "remember user mode choices and ever-connected atomics across reboot",
+                "total_atomics": len(self._atomics),
+                "persisted_atomics": len(candidates),
+                "skipped_atomics": len(self._atomics) - len(candidates),
+            },
+        )
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._state_path.with_suffix(".tmp")
@@ -270,6 +299,7 @@ class Registry:
                     label=entry.get("label", atomic_id),
                     mode=Mode(entry.get("mode", "unused")),
                     health=Health.ABSENT,
+                    ever_connected=entry.get("ever_connected", False),
                     capacity=Capacity(**entry.get("capacity", {})),
                     cost=Cost(**entry.get("cost", {})),
                     attributes=entry.get("attributes", {}),
