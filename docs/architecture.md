@@ -148,11 +148,21 @@ never exposed through an arbitrary WAN.
 
 `enforce/` renders the allocator's decision into kernel state:
 
-- **CAKE** per WAN egress, with bandwidth set from the capacity model and
-  `diffserv` mapping for the two service classes
+- **CAKE** per WAN egress, with bandwidth set from the atomic's measured
+  *upload* capacity (`tc qdisc ... root` shapes egress, which is bounded by
+  what we can send, not what we can receive) and `diffserv` mapping for the
+  two service classes. True ingress (download) shaping is not implemented —
+  it would need an IFB device to redirect ingress traffic through an egress
+  qdisc, and nothing in this codebase creates one; tracked as a known gap,
+  not a promise this doc makes.
 - **nftables** marks classifying traffic by originating VLAN / SSID into service
   classes
-- **policy routing** — one routing table per atomic, `ip rule` selecting by mark
+- **policy routing** — one routing table per atomic, `ip rule` selecting by
+  mark. The table number is derived from a stable hash of the atomic's id
+  (`enforce._table_for_atomic`), not assigned sequentially — every atomic
+  gets a consistent table across ticks and daemon restarts with no id→table
+  state to persist, at the cost of the numbers themselves being arbitrary
+  (100–999) rather than small and ordered.
 
 It works by **reconciliation, not command**: desired state is declared, the fast
 loop diffs actual kernel state against it and repairs the difference. That makes

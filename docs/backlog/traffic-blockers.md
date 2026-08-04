@@ -85,7 +85,7 @@ clients" invariant can actually fail. Prerequisite for item 4 — confirm with
 the scenario suite that item 4's bug is caught red before it's fixed.
 
 ### 4. fix(enforce): table-per-atomic routing, skip zero-ceiling shares, honor quiesced, shape from up_bps
-**Status:** not started
+**Status:** PR #31
 
 `enforce/__init__.py` `render()` (~78-122): derive `table` per atomic (e.g.
 stable offset from atomic id) instead of the constant `100`; skip emitting a
