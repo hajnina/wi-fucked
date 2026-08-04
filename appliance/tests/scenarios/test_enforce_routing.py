@@ -1,4 +1,5 @@
-"""Regression coverage for `enforce.render()` — item 4 of `traffic-blockers.md`.
+"""Regression coverage for `enforce.render()` — item 4 of `traffic-blockers.md`,
+plus item 5 / ADR-019's tunnel-owned egress.
 
 Four bugs lived in `render()`/`_apply_cake`: a single shared routing table for
 every atomic instead of one per atomic, routes emitted for zero-ceiling
@@ -7,11 +8,18 @@ egress from `down_bps` instead of `up_bps`. This scenario drives an
 allocation with an active BACKUP alongside a NORMAL atomic and asserts on the
 enforced state — `daemon.enforcer.actual()` — which is exactly the seam
 these bugs lived on.
+
+Since ADR-019, every route's `ifname` is the tunnel interface, not the WAN
+atomic's own `ifname` (see `test_lan_egress_tunnel.py` for that behaviour
+directly) — so "independent per atomic" now means independent *tables*, and
+tests here identify an atomic's routes by its table (`_table_for_atomic`)
+rather than by `ifname`.
 """
 
 from __future__ import annotations
 
 from wifucked.atomics.model import Kind, Mode
+from wifucked.enforce import _table_for_atomic
 from wifucked.policy import DEFAULT_PROFILES
 
 from .conftest import assert_invariants
@@ -59,20 +67,23 @@ def test_normal_and_backup_get_independent_routing_tables(harness):
     assert actual is not None
     assert actual.routes, "expected at least one installed route once BACKUP is active"
 
-    wifi_ifname = harness.daemon.registry.get(WIFI).ifname
-    phone_ifname = harness.daemon.registry.get(PHONE).ifname
-
-    tables_by_ifname = {r.ifname: r.table for r in actual.routes}
-    assert wifi_ifname in tables_by_ifname
-    assert phone_ifname in tables_by_ifname
-    assert tables_by_ifname[wifi_ifname] != tables_by_ifname[phone_ifname], (
-        f"NORMAL and BACKUP atomics were routed through the same table — got {tables_by_ifname}"
+    # ADR-019: every route's next hop is the tunnel, never a WAN atomic's own
+    # ifname — that's the whole point of tunnel-owned egress surviving a WAN
+    # swap without `render()`'s output changing shape.
+    tunnel_ifname = harness.daemon.tunnel.interface
+    assert all(r.ifname == tunnel_ifname for r in actual.routes), (
+        f"a route pointed somewhere other than the tunnel ({tunnel_ifname}) — got {actual.routes}"
     )
 
-    # Every route for a given ifname must agree on that ifname's table across
-    # the whole ruleset (multiple profiles can route to the same atomic).
-    for ifname, table in tables_by_ifname.items():
-        assert all(r.table == table for r in actual.routes if r.ifname == ifname)
+    wifi_table = _table_for_atomic(WIFI)
+    phone_table = _table_for_atomic(PHONE)
+    tables_present = {r.table for r in actual.routes}
+    assert wifi_table in tables_present
+    assert phone_table in tables_present
+    assert wifi_table != phone_table, (
+        "NORMAL and BACKUP atomics hashed to the same table — "
+        f"got wifi={wifi_table} phone={phone_table}"
+    )
 
     assert_invariants(harness.timeline)
 
@@ -100,11 +111,11 @@ def test_zero_ceiling_shares_produce_no_route(harness):
     assert actual is not None
     profile_by_vlan = {p.vlan: p.name for p in DEFAULT_PROFILES}
 
-    phone_ifname = harness.daemon.registry.get(PHONE).ifname
+    phone_table = _table_for_atomic(PHONE)
     besteffort_routes_to_phone = [
         r
         for r in actual.routes
-        if r.ifname == phone_ifname and profile_by_vlan.get(r.fwmark) == "Stable_besteffort"
+        if r.table == phone_table and profile_by_vlan.get(r.fwmark) == "Stable_besteffort"
     ]
     assert not besteffort_routes_to_phone, (
         "best-effort traffic was routed to BACKUP despite a zero-ceiling share — "
@@ -132,8 +143,13 @@ def test_quiesced_atomic_never_appears_in_routes(harness):
 
     actual = harness.daemon.enforcer.actual()
     phone_ifname = harness.daemon.registry.get(PHONE).ifname
+    phone_table = _table_for_atomic(PHONE)
     if actual is not None:
-        assert not any(r.ifname == phone_ifname for r in actual.routes)
+        # Routes all share the tunnel's ifname (ADR-019), so a quiesced
+        # atomic's absence shows up as its table never appearing, not as its
+        # ifname never appearing. Shaping is still keyed by the atomic's own
+        # physical ifname, unaffected by ADR-019.
+        assert not any(r.table == phone_table for r in actual.routes)
         assert not any(s.ifname == phone_ifname for s in actual.shaping)
 
     assert_invariants(harness.timeline)

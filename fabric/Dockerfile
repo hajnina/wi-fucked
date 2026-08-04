@@ -9,8 +9,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# nftables + procps (for sysctl) are needed by FabricWireGuard.ensure_ready()
+# to enable IPv4 forwarding and NAT tunnel-peer traffic egressing the
+# fabric's own WAN (ADR-019) — LAN client traffic rides the tunnel all the
+# way here now, not just tunnel-management traffic.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends wireguard-tools iproute2 \
+    && apt-get install -y --no-install-recommends wireguard-tools iproute2 nftables procps \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

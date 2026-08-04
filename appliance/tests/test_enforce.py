@@ -73,14 +73,29 @@ def test_render_marks_are_independent_of_active_shares():
     # Best-effort has no share, but its mark must still be present.
     assert (BEST_EFFORT.vlan, BEST_EFFORT.vlan) in desired.marks
     assert (CRITICAL.vlan, CRITICAL.vlan) in desired.marks
-    # Routes remain allocation-derived, on this atomic's own table.
+    # Routes remain allocation-derived, on this atomic's own table, but the
+    # next hop is the tunnel (ADR-019), never the WAN atomic's own ifname.
     assert (
-        RouteRule(fwmark=CRITICAL.vlan, table=_table_for_atomic(atomic.id), ifname="wlan0")
+        RouteRule(fwmark=CRITICAL.vlan, table=_table_for_atomic(atomic.id), ifname="wg0")
         in desired.routes
     )
+    # CAKE shaping is unaffected by ADR-019 — it still shapes the WAN
+    # atomic's own physical interface, not the tunnel.
     assert any(
         s.ifname == "wlan0" and s.down_bps == int(10_000_000 * 0.95) for s in desired.shaping
     )
+
+
+def test_render_routes_use_the_configured_tunnel_ifname():
+    atomic = _atomic()
+    alloc = Allocation(
+        primary_id=atomic.id,
+        backup_active=False,
+        shares=(Share(atomic.id, CRITICAL.name, 5_000_000),),
+    )
+    desired = render(alloc, {atomic.id: atomic}, tunnel_ifname="wg7")
+
+    assert all(r.ifname == "wg7" for r in desired.routes)
 
 
 def test_render_derives_a_distinct_table_per_atomic():
@@ -104,10 +119,12 @@ def test_render_derives_a_distinct_table_per_atomic():
     )
     desired = render(alloc, {a.id: a, b.id: b})
 
-    tables = {r.ifname: r.table for r in desired.routes}
-    assert tables["wlan0"] != tables["usb0"]
-    assert tables["wlan0"] == _table_for_atomic(a.id)
-    assert tables["usb0"] == _table_for_atomic(b.id)
+    # Both atomics' routes now point at the same tunnel interface (ADR-019),
+    # so the table — not the ifname — is what must stay per-atomic distinct.
+    # Both shares carry CRITICAL, so distinguish them by atomic-derived table.
+    tables = {r.table for r in desired.routes}
+    assert tables == {_table_for_atomic(a.id), _table_for_atomic(b.id)}
+    assert all(r.ifname == "wg0" for r in desired.routes)
 
 
 def test_render_skips_zero_ceiling_shares():
@@ -133,6 +150,20 @@ def test_nft_ruleset_uses_atomic_flush_idiom_and_marks_per_bss():
     # two_bss: critical lives on the second BSS, best-effort on the base BSS.
     assert 'iifname "wlan0_1.10" meta mark set 10' in script
     assert 'iifname "wlan0.20" meta mark set 20' in script
+
+
+def test_nft_ruleset_chain_is_not_named_mark():
+    """A chain literally named `mark` is a syntax error to real `nft` — it
+    collides with the `meta mark set` statement's own grammar. Confirmed by
+    running this exact ruleset through `nft -c -f -` during the QEMU
+    packet-routing proof (`appliance/tests/qemu/`), not by inspection: this
+    was a real, standing bug where `_apply_marks()` silently failed (logged
+    and swallowed per ADR-008, never crashed) on every real box that ever
+    ran this code, since before this PR.
+    """
+    script = LinuxEnforcer(lan_mode="two_psk", base_interface="wlan0")._nft_ruleset()
+    assert "chain mark {" not in script
+    assert "chain lan_mark {" in script
 
 
 def test_nft_ruleset_two_psk_puts_both_profiles_on_base_bss():
