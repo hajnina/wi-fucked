@@ -22,6 +22,13 @@ modemmanager
 usbmuxd
 libimobiledevice-utils
 ethtool
+# Wi-Fi-as-WAN (hal/linux.py LinuxWifi): wlan0 is unmanaged by NetworkManager
+# (setup_rpi.sh, ADR-011) so nmcli cannot scan/associate on it — station
+# scan/connect/link go through iw + wpa_supplicant directly, with dhclient for
+# address assignment. See docs/active-tests.md, "Wi-Fi-as-WAN via iw/wpa_supplicant".
+iw
+wpasupplicant
+isc-dhcp-client
 
 # Runtime
 python3
