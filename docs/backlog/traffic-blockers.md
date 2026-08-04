@@ -85,7 +85,7 @@ clients" invariant can actually fail. Prerequisite for item 4 — confirm with
 the scenario suite that item 4's bug is caught red before it's fixed.
 
 ### 4. fix(enforce): table-per-atomic routing, skip zero-ceiling shares, honor quiesced, shape from up_bps
-**Status:** PR #31
+**Status:** merged
 
 `enforce/__init__.py` `render()` (~78-122): derive `table` per atomic (e.g.
 stable offset from atomic id) instead of the constant `100`; skip emitting a
@@ -174,7 +174,7 @@ LAN-only bind) consistent with that architecture doc; adjust the doc if the
 chosen mechanism differs from what it currently implies.
 
 ### 10. fix(discovery): dedupe SSID-only atomics, stop wearing the SD card
-**Status:** PR #32
+**Status:** merged
 
 `discovery/__init__.py` (~51-70, ~52, and the ~10s AP-radio scan): every
 visible SSID becomes a permanent persisted `Atomic`, and `persist()`
