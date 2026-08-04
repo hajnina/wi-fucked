@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -67,7 +68,13 @@ class Config:
     loops: LoopConfig = field(default_factory=LoopConfig)
     thresholds: Thresholds = field(default_factory=Thresholds)
     state_dir: Path = DEFAULT_STATE_DIR
-    api_host: str = "0.0.0.0"  # noqa: S104 - the LAN is who this serves
+    #: Bound to the LAN gateway address (matches ``LanConfig.address``), never to
+    #: 0.0.0.0. Every WAN atomic (Wi-Fi station, USB tether, cellular) is a
+    #: separate interface with its own address; binding here means the dashboard
+    #: is unreachable from any of them even before the token check below runs
+    #: (ADR: architecture.md "WANs are hostile"). Defense in depth, not the only
+    #: layer — see ``api_token``.
+    api_host: str = "10.44.0.1"
     api_port: int = 8080
 
     @property
@@ -81,6 +88,10 @@ class Config:
     @property
     def config_path(self) -> Path:
         return self.state_dir / "config.json"
+
+    @property
+    def api_token_path(self) -> Path:
+        return self.state_dir / "api_token"
 
     def to_dict(self) -> dict:
         payload = asdict(self)
@@ -163,6 +174,48 @@ def load(path: Path | None = None) -> Config:
         },
     )
     return config
+
+
+def load_or_create_api_token(config: Config, *, persist: bool = True) -> str:
+    """Load the dashboard/API's auth token, generating one on first run.
+
+    Mirrors the WireGuard keypair pattern in ``firstboot.sh``: a secret
+    generated on-device, once, and never baked into an image or committed to
+    ``config.json`` (that file is meant to be human-readable and hand-editable
+    per ADR-010 — a bearer token doesn't belong in it). Stored at
+    ``config.api_token_path`` with owner-only permissions, exactly like
+    ``/etc/wireguard/wifucked-privatekey``.
+
+    Under ``MOCK_HW`` (``persist=False``, matching ``Daemon(persist=...)``)
+    nothing touches disk: a fresh token is minted for this process only, the
+    same way registry/telemetry persistence is skipped in that mode.
+    """
+    if not persist:
+        return secrets.token_urlsafe(32)
+
+    path = config.api_token_path
+    try:
+        existing = path.read_text().strip()
+    except OSError:
+        existing = ""
+    if existing:
+        return existing
+
+    token = secrets.token_urlsafe(32)
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(token)
+    path.chmod(0o600)
+    log.info(
+        "Generated dashboard API token",
+        extra={
+            "workflow": "api_token_init",
+            "state": "completed",
+            "intent": "gate the dashboard/API to holders of the on-device token, "
+            "consistent with 'LAN services never exposed through an arbitrary WAN'",
+            "path": str(path),
+        },
+    )
+    return token
 
 
 def release_info() -> dict[str, str]:

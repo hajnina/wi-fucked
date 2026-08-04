@@ -144,6 +144,16 @@ WANs are treated as hostile — public Wi-Fi especially. The tunnel is the secur
 boundary between the wifucked Internet and the balanced LAN, and LAN services are
 never exposed through an arbitrary WAN.
 
+The local dashboard/API applies the same principle to itself, in two layers:
+it binds only to the LAN gateway address (`config.api_host`, never `0.0.0.0`),
+and every route except `/api/health` and the captive-portal probes requires a
+bearer token (HTTP Basic auth, password-only) generated once on-device at
+`<state_dir>/api_token` — the same generate-once-on-device pattern the
+WireGuard identity uses in `firstboot.sh`, never baked into an image or
+committed to the hand-editable `config.json`. See
+`wifucked.config.load_or_create_api_token` and the `@app.before_request` gate
+in `wifucked.api`.
+
 ## Enforcement
 
 `enforce/` renders the allocator's decision into kernel state:

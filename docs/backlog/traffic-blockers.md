@@ -164,7 +164,7 @@ thread (separate thread/async, or cap total probe time per tick) so
 doc if the enforced cadence ends up different.
 
 ### 9. fix(api): require authentication, bind off 0.0.0.0
-**Status:** not started
+**Status:** in progress
 
 `config.py:64` / `api/__init__.py:83-100`: `POST /api/atomics/<id>/mode` and
 `GET /api/diagnostics/bundle` are open to any network the appliance is

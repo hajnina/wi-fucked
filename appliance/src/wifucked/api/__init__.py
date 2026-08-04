@@ -12,6 +12,7 @@ needed. `appliance/tests/verify_no_external_assets.py` enforces this in CI.
 
 from __future__ import annotations
 
+import hmac
 import io
 import json
 import tarfile
@@ -28,13 +29,55 @@ log = get_logger("api")
 
 _UI = Path(__file__).resolve().parent.parent / "ui"
 
+#: Reachable with no token — liveness probes can't authenticate, and captive
+#: portal probes are answered by devices that haven't joined anything yet.
+#: Everything else (the dashboard page, its data, and every mutating or
+#: diagnostic route) carries the device's own network state and is gated —
+#: architecture.md: "LAN services are never exposed through an arbitrary WAN."
+_UNAUTHENTICATED_PATHS = frozenset(
+    {
+        "/api/health",
+        "/generate_204",
+        "/gen_204",
+        "/hotspot-detect.html",
+        "/ncsi.txt",
+    }
+)
 
-def create_app(daemon: Daemon) -> Flask:
+
+def create_app(daemon: Daemon, api_token: str = "") -> Flask:
     app = Flask(
         __name__,
         template_folder=str(_UI / "templates"),
         static_folder=str(_UI / "static"),
     )
+
+    @app.before_request
+    def require_auth():
+        if request.path in _UNAUTHENTICATED_PATHS:
+            return None
+        auth = request.authorization
+        valid = (
+            bool(api_token)
+            and auth is not None
+            and hmac.compare_digest(auth.password or "", api_token)
+        )
+        if not valid:
+            log.warning(
+                "Rejected unauthenticated dashboard/API request",
+                extra={
+                    "workflow": "api_auth",
+                    "state": "failed",
+                    "intent": "keep the dashboard reachable only to holders of the on-device token",
+                    "path": request.path,
+                    "ip": request.remote_addr,
+                },
+            )
+            response = jsonify({"error": "authentication required"})
+            response.status_code = 401
+            response.headers["WWW-Authenticate"] = 'Basic realm="wifucked"'
+            return response
+        return None
 
     def _timed(workflow: str):
         started = time.monotonic()
