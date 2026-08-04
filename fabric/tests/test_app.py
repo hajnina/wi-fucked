@@ -4,6 +4,7 @@ import base64
 
 import pytest
 
+from fabric import MIN_APPLIANCE_VERSION, __version__
 from fabric.app import create_app
 from fabric.config import FabricConfig
 from fabric.peers import PeerRegistry
@@ -64,6 +65,8 @@ def test_health_requires_no_auth(client) -> None:
     body = resp.get_json()
     assert body["ok"] is True
     assert body["address"] == "fabric.example.com:51820"
+    assert body["version"] == __version__
+    assert body["min_appliance_version"] == MIN_APPLIANCE_VERSION
 
 
 def test_register_rejects_missing_credentials(client) -> None:
