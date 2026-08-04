@@ -125,7 +125,7 @@ Either resolution needs a scenario test proving a LAN client's traffic both
 traverses the chosen path and survives a simulated WAN swap.
 
 ### 6. fix(allocator): hysteresis stuck-in-ACTIVE, duplicate backup-is-primary shares, ARMING decision record lies
-**Status:** not started
+**Status:** PR #30
 
 `allocator/__init__.py`:
 - `_step_hysteresis` (~165-167): only `recovered` leaves ACTIVE — add the
