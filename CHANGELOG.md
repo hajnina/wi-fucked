@@ -1,3 +1,22 @@
+## v1.2.4 — 2026-08-04
+
+### fix
+- drive Wi-Fi-as-WAN via iw instead of nmcli (#27)
+- require authentication, bind off 0.0.0.0 (#33)
+- stop duplicate message/asctime fields, configure fabric logging (#26)
+
+### docs
+- mark item 14 merged
+- mark item 1 merged
+- mark items 9 and 11 merged
+- changelog for v1.2.3 [skip ci]
+- changelog for v1.2.3 [skip ci]
+
+### ci
+- add automerge sweep as a backstop for the one-shot merge trigger (#34)
+- pass FABRIC_VERSION build-arg and verify the baked version (#29)
+
+
 ## v1.2.3 — 2026-08-04
 
 ### fix
