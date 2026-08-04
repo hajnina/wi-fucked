@@ -182,8 +182,8 @@ def ethernet_atomic(hal: Hal, ifname: str) -> Atomic | None:
     if not mac:
         return None
     return Atomic(
-        id=mac_id(Kind.USB_ETHERNET, mac),
-        kind=Kind.USB_ETHERNET,
+        id=mac_id(Kind.ETHERNET, mac),
+        kind=Kind.ETHERNET,
         label=f"Ethernet ({ifname})",
         present=hal.net.interfaces().get(ifname, False),
         ifname=ifname,

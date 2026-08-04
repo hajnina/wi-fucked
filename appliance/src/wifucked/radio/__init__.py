@@ -62,7 +62,7 @@ def select_profile(atomics: list[Atomic]) -> Profile:
         if (
             atomic.present
             and atomic.mode is not Mode.UNUSED
-            and atomic.kind in (Kind.USB_TETHER, Kind.USB_ETHERNET, Kind.CELLULAR)
+            and atomic.kind in (Kind.USB_TETHER, Kind.USB_ETHERNET, Kind.ETHERNET, Kind.CELLULAR)
         ):
             return Profile.ANCHOR
     return Profile.SHARED

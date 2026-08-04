@@ -107,6 +107,15 @@ class Allocator:
         pool = [a for a in atomics if a.in_normal_pool]
         backups = [a for a in atomics if a.mode is Mode.BACKUP and a.present]
 
+        # Establish a liveness baseline the first time we see a BACKUP atomic
+        # present, so `due_for_liveness` has something to measure elapsed time
+        # against. Deliberately not "probed" — just "clock starts now" — so a
+        # freshly-seen BACKUP waits a full `liveness_interval_s` before its
+        # first probe fires, instead of firing immediately because there was
+        # no prior timestamp to compare against.
+        for backup in backups:
+            self._h.last_liveness.setdefault(backup.id, now)
+
         normal_capacity = self._usable_capacity(pool, now)
         critical_demand = self._demand_for(demand, Priority.CRITICAL)
         deficit = critical_demand - normal_capacity
@@ -207,17 +216,32 @@ class Allocator:
         A few hundred bytes at a long interval, so we know the backup works
         before we need it. Every byte is accounted and shown to the user — the
         "zero bytes" claim carries an asterisk, and the asterisk is visible.
+
+        Pure predicate — read-only, no side effects. `decide()` establishes
+        the per-atomic baseline (so a freshly-seen BACKUP doesn't fire
+        immediately) and `mark_liveness_probed()` records that a probe
+        actually happened; callers must call the latter themselves once they
+        act on a `True` result here, or this will return `True` forever.
         """
         if atomic.mode is not Mode.BACKUP or not atomic.present:
             return False
         if self._h.state is BackupState.ACTIVE:
             return False  # it is carrying real traffic; no probe needed
-        now = self._clock.now()
         last = self._h.last_liveness.get(atomic.id)
-        if last is not None and now - last < self._t.liveness_interval_s:
+        if last is None:
+            # No baseline yet — decide() hasn't observed this atomic as a
+            # present BACKUP yet. Not due until a baseline exists.
             return False
-        self._h.last_liveness[atomic.id] = now
-        return True
+        return self._clock.now() - last >= self._t.liveness_interval_s
+
+    def mark_liveness_probed(self, atomic: Atomic) -> None:
+        """Record that a liveness probe was actually sent for `atomic` now.
+
+        Explicit, deliberate side effect — call this only after actually
+        spending the liveness budget for `atomic`, never as a byproduct of
+        merely checking `due_for_liveness`.
+        """
+        self._h.last_liveness[atomic.id] = self._clock.now()
 
     # -- helpers --------------------------------------------------------------
 

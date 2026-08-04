@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from wifucked.atomics.model import Health, Kind, Mode
 from wifucked.clock import VirtualClock
-from wifucked.discovery import DEFAULT_WIFI_SCAN_MIN_INTERVAL_S, Discoverer, discover
+from wifucked.discovery import (
+    DEFAULT_WIFI_SCAN_MIN_INTERVAL_S,
+    Discoverer,
+    discover,
+    ethernet_atomic,
+)
 from wifucked.hal.base import ScannedNetwork
 from wifucked.hal.mock import build_mock_hal
 
@@ -35,6 +40,27 @@ def test_distinguishes_usb_ethernet_adapter_from_tether():
     assert by_kind[Kind.USB_ETHERNET].attributes["transport"] == "USB Ethernet"
 
     assert by_kind[Kind.USB_TETHER].id != by_kind[Kind.USB_ETHERNET].id
+
+
+def test_non_usb_ethernet_is_not_mislabelled_as_usb():
+    """`ethernet_atomic` builds a non-USB Ethernet atomic (backlog item 13).
+
+    It must not be labelled `Kind.USB_ETHERNET` — that kind is explicitly for
+    the USB-attached adapter case, which `_discover_usb` already covers.
+    """
+    hal = build_mock_hal()
+
+    atomic = ethernet_atomic(hal, "wlan0")
+
+    assert atomic is not None
+    assert atomic.kind is Kind.ETHERNET
+    assert atomic.kind is not Kind.USB_ETHERNET
+
+
+def test_ethernet_atomic_returns_none_without_a_mac():
+    hal = build_mock_hal()
+
+    assert ethernet_atomic(hal, "no-such-interface") is None
 
 
 def test_discovered_connections_are_unused_until_classified():

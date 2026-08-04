@@ -211,7 +211,7 @@ effective capacity to 0) on every restart — compounds with items 2 and 6,
 land after both.
 
 ### 13. fix: small independent bugs
-**Status:** not started
+**Status:** in progress
 
 - `allocator/__init__.py` `due_for_liveness` (~195-211): stop mutating
   `last_liveness` as a side effect of a predicate check; make stamping
