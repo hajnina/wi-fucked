@@ -172,7 +172,14 @@ in `wifucked.api`.
   (`enforce._table_for_atomic`), not assigned sequentially — every atomic
   gets a consistent table across ticks and daemon restarts with no id→table
   state to persist, at the cost of the numbers themselves being arbitrary
-  (100–999) rather than small and ordered.
+  (100–999) rather than small and ordered. Every table's default route
+  points at the tunnel interface (`wg0`), not the atomic's own `ifname`
+  ([ADR-019](adr/ADR-019-lan-egress-through-the-tunnel.md)) — the
+  per-atomic table still exists for CAKE shaping and future per-atomic
+  routing policy, but the actual next hop for LAN client traffic is always
+  the tunnel, so a WAN swap changes which atomic carries the tunnel
+  (`tunnel.bind_to`) without changing the shape of anything `render()`
+  produces.
 
 It works by **reconciliation, not command**: desired state is declared, the fast
 loop diffs actual kernel state against it and repairs the difference. That makes

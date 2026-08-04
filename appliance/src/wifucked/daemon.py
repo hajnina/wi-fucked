@@ -217,7 +217,9 @@ class Daemon:
 
         if self.allocation is not None:
             by_id = {a.id: a for a in atomics}
-            self.enforcer.reconcile(render(self.allocation, by_id))
+            self.enforcer.reconcile(
+                render(self.allocation, by_id, tunnel_ifname=self.tunnel.interface)
+            )
             self._bind_tunnel(by_id)
 
         self._update_led()

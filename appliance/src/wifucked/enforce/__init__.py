@@ -41,6 +41,10 @@ log = get_logger("enforce")
 #: anyone else's rules.
 _TABLE = "wifucked"
 
+#: Name of the LAN-marking chain within `_TABLE`. Not "mark" — see
+#: `_nft_ruleset()`'s comment for why that name is rejected by real nft.
+_MARK_CHAIN = "lan_mark"
+
 #: Policy-routing table numbers are handed out per atomic, not shared. Base of
 #: the range and its width — 900 tables is comfortably beyond any realistic
 #: atomic count and keeps the numbers away from low-numbered tables reserved
@@ -102,12 +106,29 @@ class Enforcer(Protocol):
     def actual(self) -> DesiredState | None: ...
 
 
+#: Default tunnel interface name, matching `tunnel.WireGuardTunnel`'s default.
+#: `render()` accepts an override so callers stay driven by the actual
+#: configured tunnel interface (`config.fabric.interface`) rather than two
+#: modules independently agreeing on a string.
+_DEFAULT_TUNNEL_IFNAME = "wg0"
+
+
 def render(
     allocation: Allocation,
     atomics: dict[str, Atomic],
     profiles: tuple[ServiceProfile, ...] = DEFAULT_PROFILES,
+    tunnel_ifname: str = _DEFAULT_TUNNEL_IFNAME,
 ) -> DesiredState:
-    """Turn an allocation into the kernel state that would implement it."""
+    """Turn an allocation into the kernel state that would implement it.
+
+    LAN client egress is tunnel-owned (ADR-019): every marked route's default
+    hop is the tunnel interface, never the WAN atomic's own `ifname`. The
+    atomic-keyed routing table still exists per share (`_table_for_atomic`) —
+    that grouping remains useful for CAKE shaping and any future per-atomic
+    routing policy — but the next hop it points at is always the tunnel, so a
+    WAN swap changes only which atomic carries the tunnel
+    (`tunnel.bind_to`), not the shape of anything this function produces.
+    """
     shaping: list[Shaping] = []
     routes: list[RouteRule] = []
 
@@ -144,7 +165,10 @@ def render(
             continue
         fwmark = profile.vlan
         table = _table_for_atomic(share.atomic_id)
-        routes.append(RouteRule(fwmark=fwmark, table=table, ifname=atomic.ifname))
+        # The next hop is the tunnel (ADR-019), not `atomic.ifname` — the WAN
+        # atomic still gates whether this route exists at all (no atomic, no
+        # ifname, no route), it just no longer supplies the egress device.
+        routes.append(RouteRule(fwmark=fwmark, table=table, ifname=tunnel_ifname))
 
     for atomic_id in {s.atomic_id for s in allocation.shares}:
         atomic = atomics.get(atomic_id)
@@ -398,7 +422,15 @@ class LinuxEnforcer(Enforcer):
             f"table inet {_TABLE}",
             f"flush table inet {_TABLE}",
             f"table inet {_TABLE} {{",
-            "    chain mark {",
+            # Not named "mark": that collides with an nftables grammar
+            # keyword (the `meta mark set` statement itself), and real
+            # `nft` — confirmed via the QEMU packet-routing proof in
+            # appliance/tests/qemu/, not by inspection — rejects a chain
+            # literally named `mark` with a syntax error, even quoted. This
+            # was a real, standing bug: `_apply_marks()` has been failing
+            # (gracefully, per ADR-008 — logged and swallowed, not crashed)
+            # on every real box that ever ran this, since before this PR.
+            f"    chain {_MARK_CHAIN} {{",
             "        type filter hook prerouting priority mangle; policy accept;",
         ]
         for profile in self._profiles:

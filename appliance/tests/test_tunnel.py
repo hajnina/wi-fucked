@@ -275,7 +275,11 @@ def test_attach_succeeds_and_configures_the_interface(monkeypatch, tmp_path):
     wg_set_call = next(c for c in responder.calls if c[:2] == ["wg", "set"])
     assert "FABRICKEY=" in wg_set_call
     assert "fabric.example.com:51820" in wg_set_call
-    assert "10.99.0.0/24" in wg_set_call
+    # allowed-ips is a default route, not the fabric's tunnel pool CIDR
+    # (ADR-019) — LAN client egress rides this tunnel, so it must accept
+    # traffic addressed anywhere, not just inside the tunnel pool.
+    assert "0.0.0.0/0" in wg_set_call
+    assert "10.99.0.0/24" not in wg_set_call
     assert str(priv_key_file) in wg_set_call
 
     status = tun.status()

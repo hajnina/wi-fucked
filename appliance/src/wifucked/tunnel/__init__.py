@@ -77,6 +77,12 @@ class TunnelStatus:
 
 
 class Tunnel(Protocol):
+    #: The tunnel interface name (e.g. ``wg0``). `enforce.render()` routes LAN
+    #: client traffic here rather than at a WAN atomic's `ifname` (ADR-019),
+    #: so this is the single source of truth both modules read from instead
+    #: of independently agreeing on a string.
+    interface: str
+
     def status(self) -> TunnelStatus: ...
     def bind_to(self, atomic_id: str, ifname: str) -> bool:
         """Move the tunnel onto a different WAN without dropping client sessions."""
@@ -283,7 +289,8 @@ def _read_public_key(path: Path) -> str | None:
 
 
 class MockTunnel(Tunnel):
-    def __init__(self, fabric_min: str = "0.0.0"):
+    def __init__(self, fabric_min: str = "0.0.0", interface: str = "wg0"):
+        self.interface = interface
         self._fabric_min = fabric_min
         self._server = FabricServer(
             name="mock-fabric",
@@ -355,6 +362,10 @@ class WireGuardTunnel(Tunnel):
         self._server = server
         #: Current carrying atomic — stable identity, not an ifname (ADR-002).
         self._via_atomic_id: str | None = None
+
+    @property
+    def interface(self) -> str:
+        return self._interface
 
     def set_server(self, server: FabricServer | None) -> None:
         """Record which fabric the tunnel is attached to (drives compatibility)."""
@@ -565,11 +576,16 @@ class WireGuardTunnel(Tunnel):
             )
             return False
 
+        # `tunnel_pool` (e.g. "10.99.0.0/24") is still required in the response
+        # — it identifies the fabric's tunnel addressing scheme and is
+        # validated above — but it is deliberately *not* what gets programmed
+        # as `allowed-ips` below. LAN client egress rides this tunnel too
+        # (ADR-019), so the peer must accept default-route traffic, not just
+        # packets addressed inside the tunnel pool.
         if not self._configure_interface(
             private_key_path,
             fabric_public_key,
             str(wg_endpoint),
-            str(tunnel_pool),
             str(assigned_address),
         ):
             return False
@@ -601,13 +617,20 @@ class WireGuardTunnel(Tunnel):
         private_key_path: Path,
         peer_public_key: str,
         endpoint: str,
-        allowed_ips: str,
         local_address: str,
     ) -> bool:
         """Bring ``wg0`` up with the device's key, the fabric peer, and its
         assigned tunnel address. Every step is additive/idempotent — a rerun
         (e.g. after a daemon restart) tolerates "File exists" rather than
         tearing anything down first (ADR-008).
+
+        ``allowed-ips`` is set to ``0.0.0.0/0`` — a default route, not the
+        fabric's tunnel pool CIDR — so WireGuard's crypto-routing accepts and
+        encrypts LAN client traffic bound for arbitrary Internet
+        destinations, not just packets addressed inside the tunnel pool
+        (ADR-019). `enforce.render()` is what actually decides which LAN
+        traffic reaches this interface; this only controls what the tunnel
+        itself is willing to carry once it gets here.
         """
         if _run(["ip", "link", "add", "dev", self._interface, "type", "wireguard"]) is None:
             # Tolerated: either it already exists (fine) or `ip` truly failed, in
@@ -625,7 +648,7 @@ class WireGuardTunnel(Tunnel):
                 "endpoint",
                 endpoint,
                 "allowed-ips",
-                allowed_ips,
+                "0.0.0.0/0",
                 "persistent-keepalive",
                 "25",
             ]

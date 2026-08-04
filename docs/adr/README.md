@@ -30,6 +30,7 @@ See [SOP-007](../sop/SOP-007-architectural-decisions.md).
 | [016](ADR-016-versioning.md) | Tag-derived SemVer, one channel, immutable releases | Accepted |
 | [017](ADR-017-conventional-commits.md) | Conventional commits mandatory and CI-enforced | Accepted |
 | [018](ADR-018-main-release-channel.md) | Main is the sole release channel | Accepted |
+| [019](ADR-019-lan-egress-through-the-tunnel.md) | LAN client egress routes through the tunnel, not the WAN directly | Accepted |
 
 ⚠ — rests on driver behaviour that is expected but **not yet verified on
 hardware**. Expect superseding ADRs once [`../radio-spike.md`](../radio-spike.md)
