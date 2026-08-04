@@ -15,7 +15,7 @@ import threading
 
 from wifucked import __version__
 from wifucked.api import create_app
-from wifucked.config import load
+from wifucked.config import load, load_or_create_api_token
 from wifucked.daemon import Daemon
 from wifucked.logging import get_logger
 
@@ -76,7 +76,8 @@ def main() -> int:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    app = create_app(daemon)
+    api_token = load_or_create_api_token(config, persist=persist)
+    app = create_app(daemon, api_token=api_token)
     log.info(
         "Dashboard listening",
         extra={

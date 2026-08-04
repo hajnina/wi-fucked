@@ -7,6 +7,7 @@ probing a BACKUP link.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 
 import pytest
@@ -30,6 +31,13 @@ from wifucked.probe import (
 )
 from wifucked.telemetry import Telemetry
 from wifucked.tunnel import MockTunnel, WireGuardTunnel, fabric_compatible, version_tuple
+
+_API_TOKEN = "test-dashboard-token"
+
+
+def _basic_auth_header(password: str, username: str = "wifucked") -> str:
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return f"Basic {token}"
 
 
 @pytest.fixture
@@ -273,6 +281,69 @@ class TestConfig:
         assert config.lan.besteffort_ssid
         assert config.thresholds.activation_dwell_s > 0
 
+    def test_api_does_not_bind_every_interface_by_default(self):
+        """Regression guard: the dashboard/API must never default to 0.0.0.0 —
+        that would make it reachable from any WAN atomic, contradicting
+        architecture.md's 'LAN services are never exposed through an
+        arbitrary WAN'."""
+        config = Config()
+        assert config.api_host != "0.0.0.0"  # noqa: S104 - asserting it's NOT this
+        # Binds to the LAN gateway address specifically, not merely "not
+        # 0.0.0.0" (e.g. not localhost, which would break real LAN clients).
+        assert config.api_host == config.lan.address
+
+
+class TestApiToken:
+    def test_generates_and_persists_a_token(self, tmp_path):
+        from wifucked.config import load_or_create_api_token
+
+        config = Config(state_dir=tmp_path)
+        token = load_or_create_api_token(config)
+
+        assert token
+        path = tmp_path / "api_token"
+        assert path.read_text().strip() == token
+
+    def test_reuses_an_existing_token(self, tmp_path):
+        from wifucked.config import load_or_create_api_token
+
+        config = Config(state_dir=tmp_path)
+        first = load_or_create_api_token(config)
+        second = load_or_create_api_token(config)
+
+        assert first == second
+
+    def test_token_file_is_owner_only(self, tmp_path):
+        import stat
+
+        from wifucked.config import load_or_create_api_token
+
+        config = Config(state_dir=tmp_path)
+        load_or_create_api_token(config)
+
+        mode = stat.S_IMODE((tmp_path / "api_token").stat().st_mode)
+        assert mode == 0o600
+
+    def test_unpersisted_mode_never_touches_disk(self, tmp_path):
+        """MOCK_HW / persist=False: an ephemeral token, no file written —
+        mirrors how registry/telemetry persistence is skipped in that mode."""
+        from wifucked.config import load_or_create_api_token
+
+        config = Config(state_dir=tmp_path)
+        token = load_or_create_api_token(config, persist=False)
+
+        assert token
+        assert not (tmp_path / "api_token").exists()
+
+    def test_unpersisted_tokens_differ_per_call(self, tmp_path):
+        from wifucked.config import load_or_create_api_token
+
+        config = Config(state_dir=tmp_path)
+        first = load_or_create_api_token(config, persist=False)
+        second = load_or_create_api_token(config, persist=False)
+
+        assert first != second
+
     def test_missing_file_falls_back_to_defaults(self, tmp_path):
         config = load(tmp_path / "absent.json")
         assert config.lan.critical_ssid == "Stable_critical"
@@ -302,9 +373,13 @@ class TestApi:
 
         daemon.start()
         daemon.tick()
-        app = create_app(daemon)
+        app = create_app(daemon, api_token=_API_TOKEN)
         app.config.update(TESTING=True)
-        return app.test_client()
+        test_client = app.test_client()
+        # Requests through this fixture are the "authenticated LAN user" case;
+        # TestApiAuth below covers the unauthenticated/wrong-token paths.
+        test_client.environ_base["HTTP_AUTHORIZATION"] = _basic_auth_header(_API_TOKEN)
+        return test_client
 
     def test_state_endpoint(self, client):
         response = client.get("/api/state")
@@ -353,3 +428,77 @@ class TestApi:
 
         for marker in (b"passphrase", b"private key", b"psk", b"password"):
             assert marker not in blob
+
+
+class TestApiAuth:
+    """WANs are hostile (architecture.md); the dashboard/API must not be
+    reachable by anyone who merely reaches the appliance's address."""
+
+    @pytest.fixture
+    def app(self, daemon):
+        from wifucked.api import create_app
+
+        daemon.start()
+        daemon.tick()
+        instance = create_app(daemon, api_token=_API_TOKEN)
+        instance.config.update(TESTING=True)
+        return instance
+
+    def test_health_is_open_with_no_token(self, app):
+        response = app.test_client().get("/api/health")
+        assert response.status_code == 200
+
+    def test_captive_portal_probe_is_open_with_no_token(self, app):
+        response = app.test_client().get("/generate_204")
+        assert response.status_code in (204, 302)
+
+    def test_dashboard_page_rejects_missing_token(self, app):
+        response = app.test_client().get("/")
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"].startswith("Basic")
+
+    def test_state_endpoint_rejects_missing_token(self, app):
+        response = app.test_client().get("/api/state")
+        assert response.status_code == 401
+
+    def test_set_mode_rejects_missing_token(self, app, daemon):
+        atomic_id = daemon.registry.all()[0].id
+        response = app.test_client().post(f"/api/atomics/{atomic_id}/mode", json={"mode": "normal"})
+        assert response.status_code == 401
+
+    def test_set_mode_does_not_apply_without_auth(self, app, daemon):
+        atomic_id = daemon.registry.all()[0].id
+        before = daemon.registry.get(atomic_id).mode
+        app.test_client().post(f"/api/atomics/{atomic_id}/mode", json={"mode": "backup"})
+        assert daemon.registry.get(atomic_id).mode is before
+
+    def test_diagnostics_bundle_rejects_missing_token(self, app):
+        response = app.test_client().get("/api/diagnostics/bundle")
+        assert response.status_code == 401
+
+    def test_rejects_wrong_token(self, app):
+        client = app.test_client()
+        client.environ_base["HTTP_AUTHORIZATION"] = _basic_auth_header("not-the-token")
+        response = client.get("/api/state")
+        assert response.status_code == 401
+
+    def test_accepts_correct_token(self, app):
+        client = app.test_client()
+        client.environ_base["HTTP_AUTHORIZATION"] = _basic_auth_header(_API_TOKEN)
+        response = client.get("/api/state")
+        assert response.status_code == 200
+
+    def test_no_token_configured_means_nothing_gets_in(self, daemon):
+        """An appliance that somehow booted with an empty token (shouldn't
+        happen — ``load_or_create_api_token`` always mints one) must fail
+        closed, not open."""
+        from wifucked.api import create_app
+
+        daemon.start()
+        daemon.tick()
+        instance = create_app(daemon, api_token="")
+        instance.config.update(TESTING=True)
+        client = instance.test_client()
+        client.environ_base["HTTP_AUTHORIZATION"] = _basic_auth_header("")
+        response = client.get("/api/state")
+        assert response.status_code == 401
