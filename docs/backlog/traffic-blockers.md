@@ -101,7 +101,7 @@ containing an active BACKUP and assert both NORMAL and BACKUP get
 independent tables.
 
 ### 5. docs(adr): decide and document tunnel-vs-WAN egress ownership, then implement NAT
-**Status:** PR #35
+**Status:** merged
 
 Write a new ADR (next number after ADR-017) deciding: does LAN client
 egress route through `wg0` to the fabric (per ADR-005 / `architecture.md
