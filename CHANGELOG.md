@@ -17,6 +17,25 @@
 - changelog for v1.2.5 [skip ci]
 
 
+## v1.3.0 — 2026-08-04
+
+### feat
+- route LAN egress through the tunnel, add fabric NAT (ADR-019) (#35)
+
+### fix
+- liveness stamping side-effect, non-USB Ethernet mislabeling, non-numeric limit param (#38)
+- guard registry and telemetry state with a thread lock (#36)
+
+### perf
+- stop the medium loop from starving the fast loop (#37)
+
+### docs
+- mark item 13 merged
+- mark items 7 and 8 merged
+- mark item 5 merged
+- changelog for v1.2.5 [skip ci]
+
+
 ## v1.2.5 — 2026-08-04
 
 ### docs
