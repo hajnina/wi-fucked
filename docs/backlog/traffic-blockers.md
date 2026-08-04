@@ -73,7 +73,7 @@ contract yet. Prefer feeding it — check whether `sd_notify` is already
 wrapped anywhere in `appliance/src/wifucked/`.
 
 ### 3. test(scenarios): assert on MockEnforcer/MockAp instead of Allocation.shares
-**Status:** in progress
+**Status:** PR #28
 
 `appliance/tests/scenarios/conftest.py`: rewrite `_backup_bytes()` (and/or
 `Frame`/`_capture()`) to read from an `Enforcer` (`MockEnforcer.actual()` /
