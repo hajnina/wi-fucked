@@ -52,6 +52,10 @@ Names are constructible from the version, so the OTA client never scrapes the AP
 | `test-output.log` | The suite that gated this release |
 
 Plus the matching fabric container: `ghcr.io/hajnina/wi-fucked/fabric:X.Y.Z`.
+The fabric image's own version (`fabric.__version__`, served at `/health`) is
+injected via the `FABRIC_VERSION` Docker build-arg at image-build time, wired
+from the same version used for the tag — unlike the appliance, fabric has no
+on-disk release file; the version lives only in the frozen Python module.
 
 ### `manifest.json`
 
