@@ -18,13 +18,14 @@ deployment concern, deliberately out of MVP scope.
 from __future__ import annotations
 
 import contextlib
-import logging
 import os
 import subprocess
 import tempfile
 from pathlib import Path
 
-log = logging.getLogger("fabric.wireguard")
+from fabric.logging import get_logger
+
+log = get_logger("wireguard")
 
 DEFAULT_INTERFACE = os.getenv("FABRIC_WG_INTERFACE", "wg0")
 DEFAULT_KEY_FILE = Path(os.getenv("FABRIC_WG_PRIVATE_KEY_FILE", "/var/lib/fabric/wg-privatekey"))
