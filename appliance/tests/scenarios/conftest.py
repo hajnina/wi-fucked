@@ -19,7 +19,9 @@ from wifucked.clock import VirtualClock
 from wifucked.config import Config
 from wifucked.daemon import Daemon
 from wifucked.demand import StaticDemand
+from wifucked.enforce import DesiredState
 from wifucked.hal import build_hal
+from wifucked.hal.base import ApStatus
 from wifucked.policy import DEFAULT_PROFILES
 from wifucked.probe import Observation, ScriptedProber
 from wifucked.telemetry import Telemetry
@@ -112,6 +114,32 @@ class Harness:
         self._injected.pop(atomic_id, None)
         self._sweep()
 
+    def drop_ap(self, *, running: bool | None = None, clients: int | None = None) -> None:
+        """Perturb the mock AP directly, bypassing every code path that would
+        normally move it.
+
+        `MockAp` is otherwise only ever read via `.status()` — nothing in a
+        scenario can make the AP fail. This is the lever for it: pass
+        `running=False` to simulate the AP process dying, or `clients=<n>` to
+        simulate associated clients dropping (e.g. a botched channel move),
+        or both. Whatever isn't passed is left as it currently is.
+
+        This exists so the "AP never drops" invariant (`assert_invariants`) is
+        actually falsifiable — see the harness self-check in
+        `test_harness_self_check.py`.
+        """
+        state = self.hal.ap.state
+        self.hal.ap.state = ApStatus(
+            running=state.running if running is None else running,
+            channel=state.channel,
+            ssids=state.ssids,
+            associated_clients=state.associated_clients if clients is None else clients,
+        )
+
+    def set_ap_clients(self, n: int) -> None:
+        """Sugar over `drop_ap(clients=n)` for the common case of a client count change."""
+        self.drop_ap(clients=n)
+
     def set_capacity(
         self,
         atomic_id: str,
@@ -146,43 +174,109 @@ class Harness:
             self._capture()
 
     def _capture(self) -> None:
+        """Snapshot the world as *enforced*, not as merely decided.
+
+        `daemon.allocation` is the allocator's intent; it is not the seam this
+        harness is meant to be testing. What actually matters for the two
+        product invariants is what `daemon.enforcer` — `MockEnforcer` under
+        `MOCK_HW` — has committed via `reconcile()`. Reading `enforcer.actual()`
+        here means a bug that stops `render()`/`reconcile()` from carrying the
+        allocator's decision through to the kernel-state seam shows up as a
+        failing scenario, which is the whole point of item 3.
+        """
         ap = self.hal.ap.status()
-        allocation = self.daemon.allocation
-        served = {s.profile_name: s.ceiling_bps for s in (allocation.shares if allocation else ())}
+        actual = self.daemon.enforcer.actual()
         self.timeline.append(
             Frame(
                 at_s=self.clock.now(),
                 ap_running=ap.running,
                 ap_clients=ap.associated_clients,
-                backup_bytes=self._backup_bytes(),
+                backup_bytes=self._backup_bytes(actual),
                 backup_state=str(self.daemon.allocator.backup_state),
-                served=served,
+                served=self._served_from_actual(actual),
             )
         )
 
-    def _backup_bytes(self) -> int:
-        """Traffic the allocator permitted onto a BACKUP atomic.
+    def _served_from_actual(self, actual: DesiredState | None) -> dict[str, int]:
+        """Per-profile capacity currently provisioned, read off the enforced state.
+
+        `DesiredState` doesn't carry per-profile ceilings (that's an allocator
+        concept, lost by the time `render()` turns it into routes + shaping) —
+        it carries fwmark->ifname routes and per-ifname shaping. We reconstruct
+        a profile-keyed view by resolving each route's fwmark back to the
+        profile it belongs to (fwmark == vlan, see `render()`) and reporting
+        the shaping ceiling of the ifname it's currently routed to.
+        """
+        if actual is None:
+            return {}
+        shaping_by_ifname = {s.ifname: s.down_bps for s in actual.shaping}
+        profile_by_vlan = {p.vlan: p.name for p in DEFAULT_PROFILES}
+        served: dict[str, int] = {}
+        for route in actual.routes:
+            name = profile_by_vlan.get(route.fwmark)
+            if name is None:
+                continue
+            served[name] = shaping_by_ifname.get(route.ifname, 0)
+        return served
+
+    def _backup_bytes(self, actual: DesiredState | None) -> int:
+        """Whether a BACKUP atomic is currently carrying an enforced rule.
+
+        Design decision (see PR body): `MockEnforcer.bytes_on(ifname)` is a
+        running total accumulated across every reconcile that ever changed the
+        desired state over the *whole* test run — it answers "how much has
+        ever been applied", not "is BACKUP carrying traffic right now". The
+        invariant this feeds (`assert_invariants`'s BACKUP-carries-zero-bytes
+        check) needs a genuinely per-tick value: a frame is a leak only if
+        BACKUP is *currently* enforced while `backup_state != "active"`. A
+        cumulative counter can't answer that — it never goes back down, so
+        once BACKUP had ever been active, every later frame would show a
+        false leak; and a naive delta between ticks would read 0 on every tick
+        where `reconcile()` short-circuited an unchanged state, which is most
+        ticks (`reconcile()` only appends when the key changes), silently
+        masking a real leak that persists unchanged across many ticks.
+        Instead we look at what's *currently* committed —
+        `enforcer.actual()` — and report the shaping ceiling for any BACKUP
+        atomic whose interface is present there right now. That is exactly
+        "BACKUP has an enforced rule at this instant", which is what the
+        invariant is actually asking, and it self-corrects the tick after the
+        allocator quiesces BACKUP and the enforcer's next reconcile drops it.
 
         Liveness budget is excluded deliberately — it is accounted separately
-        and is not "carrying traffic" (ADR-006).
+        and is not "carrying traffic" (ADR-006), and it never reaches
+        `render()`/`DesiredState` in the first place.
         """
-        allocation = self.daemon.allocation
-        if allocation is None or not allocation.backup_active:
+        if actual is None:
             return 0
-        backup_ids = {a.id for a in self.daemon.registry.backups()}
-        return sum(
-            share.ceiling_bps for share in allocation.shares if share.atomic_id in backup_ids
-        )
+        backup_ifnames = {a.ifname for a in self.daemon.registry.backups() if a.ifname}
+        if not backup_ifnames:
+            return 0
+        return sum(s.down_bps + s.up_bps for s in actual.shaping if s.ifname in backup_ifnames)
 
     # -- assertions -----------------------------------------------------------
 
     def bytes_on(self, atomic_id: str) -> int:
+        """The allocator's current ceiling for one atomic, summed across profiles.
+
+        Deliberately reads `daemon.allocation.shares` (the allocator's decision),
+        not the enforcer — `Allocation.shares` carries per-profile ceilings that
+        `DesiredState` doesn't (see `_served_from_actual`'s docstring), and
+        scenarios asserting "the phone carried nothing" want to know what was
+        *decided*, at the same granularity a scenario declared demand in. The
+        enforced-state seam is what `Frame.backup_bytes`/`assert_invariants`
+        check instead — this helper and that invariant are deliberately looking
+        at two different layers of the same pipeline.
+        """
         allocation = self.daemon.allocation
         if allocation is None:
             return 0
         return sum(s.ceiling_bps for s in allocation.shares if s.atomic_id == atomic_id)
 
     def served_bps(self, profile_key: str) -> int:
+        """The allocator's current ceiling for one profile ("critical"/"besteffort"),
+        summed across whichever atomic(s) it's routed to. See `bytes_on` for why
+        this reads the allocation rather than the enforced state.
+        """
         allocation = self.daemon.allocation
         if allocation is None:
             return 0
@@ -190,6 +284,7 @@ class Harness:
         return sum(s.ceiling_bps for s in allocation.shares if s.profile_name == name)
 
     def count_transitions(self) -> int:
+        """How many times BACKUP has actually activated or released this run."""
         return self.daemon.allocator.transitions
 
 

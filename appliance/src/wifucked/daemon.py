@@ -171,14 +171,28 @@ class Daemon:
     # -- loops ----------------------------------------------------------------
 
     def tick(self) -> None:
-        """One scheduler pass. Runs whichever loops are due."""
+        """One scheduler pass. Runs whichever loops are due.
+
+        Medium runs before fast when both are due on the same pass. The medium
+        loop is what produces a new `Allocation`; the fast loop is what renders
+        and reconciles it (ADR-007). Doing it the other way round meant that on
+        every tick where a medium-loop decision landed, that tick's own fast
+        loop reconciled against the *previous* allocation, and the fresh one
+        only took effect a full second later. Harmless for activation (the new
+        share simply appeared a tick late), but for *deactivation* it meant the
+        kernel kept a withdrawn BACKUP route/shaping live for one extra tick
+        after `backup_state` had already left ACTIVE — a real, if brief, gap
+        between "we told it to stop" and "it stopped" that a scenario
+        reading `enforcer.actual()` (see appliance/tests/scenarios/conftest.py)
+        can and does catch.
+        """
         now = self.clock.now()
-        if now >= self._next["fast"]:
-            self._next["fast"] = now + self.config.loops.fast_s
-            self._fast_loop()
         if now >= self._next["medium"]:
             self._next["medium"] = now + self.config.loops.medium_s
             self._medium_loop()
+        if now >= self._next["fast"]:
+            self._next["fast"] = now + self.config.loops.fast_s
+            self._fast_loop()
         if now >= self._next["slow"]:
             self._next["slow"] = now + self.config.loops.slow_s
             self._slow_loop()
