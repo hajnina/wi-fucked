@@ -16,7 +16,16 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Baked in at build time so fabric.__version__ (served at /health) reflects
+# the real release instead of a placeholder. Declared after the pip-install
+# layer and used only in the RUN below, so a version-only change (identical
+# tree, different tag) busts just this layer onward, not the dependency
+# install. Defaults to the pre-existing placeholder so a bare `docker build`
+# with no --build-arg still works for local dev.
+ARG FABRIC_VERSION=0.0.0-dev
+
 COPY src/ src/
+RUN sed -i "s/^__version__ = .*/__version__ = \"${FABRIC_VERSION}\"/" src/fabric/__init__.py
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
