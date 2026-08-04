@@ -15,8 +15,15 @@ from flask import Flask, jsonify, request
 
 from fabric import MIN_APPLIANCE_VERSION, __version__
 from fabric.config import ConfigError, FabricConfig, load_config
+from fabric.logging import get_logger
 from fabric.peers import PeerRegistry, PoolExhausted
 from fabric.wireguard import FabricWireGuard, WireGuardError
+
+# Configuring the root "fabric" logger at import time guarantees a handler is
+# attached before gunicorn starts serving — peers.py and wireguard.py both
+# log at import-adjacent times (e.g. key generation), so this must happen
+# before those modules' loggers are ever used, not lazily inside a request.
+get_logger("app")
 
 _STARTED = time.monotonic()
 

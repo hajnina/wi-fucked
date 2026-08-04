@@ -187,7 +187,7 @@ stop/reduce the AP-radio off-channel scan (undercuts ADR-011's "AP is the
 anchor" — may need its own decision if nontrivial).
 
 ### 11. fix(logging): stop duplicate message fields, fix fabric logging
-**Status:** not started
+**Status:** PR #26
 
 `logging.py:22-29`: `_RESERVED` must also exclude `message` and `asctime`
 (both written onto the record by `Formatter.format` before

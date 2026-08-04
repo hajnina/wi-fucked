@@ -24,7 +24,6 @@ from __future__ import annotations
 import contextlib
 import ipaddress
 import json
-import logging
 import os
 import threading
 from dataclasses import dataclass
@@ -35,7 +34,9 @@ try:
 except ImportError:  # pragma: no cover - Windows dev only; production is Linux
     fcntl = None  # type: ignore[assignment]
 
-log = logging.getLogger("fabric.peers")
+from fabric.logging import get_logger
+
+log = get_logger("peers")
 
 DEFAULT_POOL = os.getenv("FABRIC_TUNNEL_POOL", "10.99.0.0/24")
 DEFAULT_REGISTRY_PATH = Path(os.getenv("FABRIC_PEER_REGISTRY", "/var/lib/fabric/peers.json"))
