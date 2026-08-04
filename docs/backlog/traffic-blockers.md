@@ -164,7 +164,7 @@ thread (separate thread/async, or cap total probe time per tick) so
 doc if the enforced cadence ends up different.
 
 ### 9. fix(api): require authentication, bind off 0.0.0.0
-**Status:** in progress
+**Status:** merged
 
 `config.py:64` / `api/__init__.py:83-100`: `POST /api/atomics/<id>/mode` and
 `GET /api/diagnostics/bundle` are open to any network the appliance is
@@ -187,7 +187,7 @@ stop/reduce the AP-radio off-channel scan (undercuts ADR-011's "AP is the
 anchor" — may need its own decision if nontrivial).
 
 ### 11. fix(logging): stop duplicate message fields, fix fabric logging
-**Status:** PR #26
+**Status:** merged
 
 `logging.py:22-29`: `_RESERVED` must also exclude `message` and `asctime`
 (both written onto the record by `Formatter.format` before
