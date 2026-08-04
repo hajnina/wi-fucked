@@ -238,6 +238,110 @@ networks, `connect_station()` associates and gets an address, and the AP
 
 ---
 
+### ADR-019 tunnel-owned LAN egress: full round-trip through real WireGuard + NAT
+
+**Status:** `UNCONFIRMED`
+**Touches:** `appliance/src/wifucked/enforce/__init__.py` (`render()`'s
+`tunnel_ifname` routing), `appliance/src/wifucked/tunnel/__init__.py`
+(`allowed-ips 0.0.0.0/0`), `fabric/src/fabric/wireguard.py`
+(`_route_rfc1918_via_wireguard`, `_enable_forwarding_and_nat`, widened
+`add_peer` allowed-ips)
+**Related:** [ADR-019](adr/ADR-019-lan-egress-through-the-tunnel.md), backlog
+item 5, `appliance/tests/qemu/`
+
+**What actually runs today:** ADR-019's code is live and unguarded — every
+`render()` call routes LAN traffic to the tunnel interface, and the fabric
+forwards+NATs tunnel-peer traffic on every `/register`. This is not gated
+behind anything; it runs on every real allocation the daemon renders.
+
+**What was independently confirmed**, via a two-VM QEMU harness
+(`appliance/tests/qemu/run_packet_routing_test.sh` — real Linux kernels, real
+`wg`/`nft`/`ip` binaries, real kernel WireGuard/CAKE/netfilter modules, the
+actual `wifucked.enforce`/`wifucked.tunnel`/`fabric.wireguard` code, not
+mocks), each checked by direct inspection of live kernel state rather than
+inferred from a passing exit code:
+- A real WireGuard handshake completes between two independently-booted VMs
+  (appliance and fabric), and `wg show` reports real key exchange and a real
+  transfer counter.
+- `enforce.render()`+`LinuxEnforcer.reconcile()` installs correct, real
+  `nft`/`ip rule`/`ip route` state for a LAN client's marked traffic, routed
+  to `wg0`, confirmed via `nft list ruleset`/`ip -j rule show`.
+- A WAN swap (`tunnel.bind_to()` from one atomic to another) changes only
+  which interface carries the tunnel — `render()`'s routing output is
+  provably unchanged, confirmed on real installed kernel state, not just
+  asserted in a scenario test.
+- A LAN-client-shaped packet (802.1Q VLAN 10, hand-crafted since this
+  sandbox's host kernel has no `CONFIG_VLAN_8021Q` to run a real one) sent
+  into the appliance guest is genuinely marked, routed to `wg0`, and
+  WireGuard-encrypted — the appliance's own `wg show` transfer-sent counter
+  increases by exactly the encrypted packet's size at the moment the LAN
+  packet is injected.
+- The fabric genuinely decrypts it — its `wg show` transfer-received counter
+  increases by the same amount at the same moment.
+- The fabric's NAT/forwarding/routing setup is syntactically and semantically
+  correct by every inspectable measure: `nft list ruleset` shows the
+  masquerade rule with the right match; `ip route get 192.168.60.99`
+  (an address in the LAN client's subnet) correctly resolves to `dev wg0`;
+  `wg show wg0` on the fabric shows the appliance peer with `allowed ips`
+  correctly widened to `10.99.0.2/32, 10.0.0.0/8, 172.16.0.0/12,
+  192.168.0.0/16`.
+- Three real, previously-undetected bugs were found and fixed by this proof,
+  independent of ADR-019's own design (see the PR body for full detail):
+  `enforce._nft_ruleset()`'s chain was literally named `mark`, which real
+  `nft` rejects as a syntax error (this had been silently failing — logged
+  and swallowed per ADR-008 — since before this PR, on every real box that
+  ever ran it); `FabricWireGuard` had no route for RFC1918 traffic onto
+  `wg0` (bare `wg` doesn't install routes the way `wg-quick` does); and
+  `net.ipv4.conf.default.forwarding` needed setting explicitly because
+  `wg0` is created after boot, too late to inherit the boot-time
+  `ip_forward=1` write.
+
+**What is unconfirmed:** The final leg — a reply from the simulated
+"Internet" target routing all the way back through the fabric's NAT,
+back through WireGuard, back to the LAN client — did not complete within
+the time available. Every piece of state on the fabric was independently
+confirmed correct (`ip route get` resolves to `wg0`, the peer's
+`allowed-ips` covers the destination, NAT rule syntax and match are
+correct), yet `wg show`'s "sent" counter on the fabric never advances
+beyond the initial handshake, meaning WireGuard itself never transmits the
+reply — even though the kernel's own routing decision says it should. A
+second, ADR-019-independent test (a locally-raw-crafted, RFC1918-source-
+spoofed packet sent directly from the fabric guest, bypassing `wg0`
+and the appliance entirely) hit the identical symptom, which suggests
+this may be an artifact of the synthetic three-layer test harness itself
+(nested TCG virtualization, this sandbox's own missing `AF_PACKET`/
+`tcpdump` support encountered while debugging) rather than an ADR-019 code
+defect — but that is a hypothesis, not a confirmed conclusion, and is
+exactly the kind of claim this file exists to avoid making without
+evidence.
+
+**Built-in fallback if it fails:** None new — if the full round-trip
+genuinely doesn't work on real hardware, LAN clients get no Internet at all
+through NORMAL atomics (the daemon has no WAN-direct fallback path;
+ADR-019 replaced the previous, also-broken WAN-direct code entirely). This
+is the same "no built-in fallback" posture the pre-ADR-019 code already had
+(egress didn't work at all before this PR either, per the backlog item this
+closes), so this is not a regression in blast radius — it's the same gap,
+now with three more real bugs fixed and one narrower, better-characterized
+open question in front of it.
+
+**Next step:** Run `appliance/tests/qemu/run_packet_routing_test.sh` again
+with more time budget than this session had, or — more reliably — run the
+equivalent flow against two real Raspberry Pi devices (or a Pi appliance
+plus the containerized fabric) on a real network, where the missing
+`AF_PACKET`/`CONFIG_VLAN_8021Q`/kernel-module constraints this sandbox
+imposed don't apply and a real `tcpdump` can watch the packet directly.
+
+**History:**
+- 2026-08-04 — QEMU proof built from scratch this session (kernel, two
+  custom initramfs images, host network namespace topology, a
+  hand-rolled VLAN-tagged packet injector). Found and fixed three real bugs
+  independent of the ADR-019 design itself. The final round-trip was not
+  achieved; every other claim above was independently confirmed against
+  live kernel state, not inferred.
+
+---
+
 ## Template for new entries
 
 ```markdown

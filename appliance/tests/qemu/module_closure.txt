@@ -1,0 +1,44 @@
+# Dependency-ordered (deps first) kernel module list for the QEMU proof.
+# Computed from Alpine v3.19 x86_64 lts modloop's modules.dep by walking the
+# transitive closure of: wireguard.ko, sch_cake.ko, nft_masq.ko,
+# nft_chain_nat.ko, 8021q.ko. Regenerate if module_closure.txt's seeds
+# change or a new Alpine release changes dependency names.
+# virtio-net (the QEMU guest's NICs) + its dependency closure — booting a
+# plain -kernel/-initrd (no distro init system, no udev/modprobe-on-demand)
+# means every driver the guest needs, including the NIC driver itself, must
+# be insmod'd explicitly, in dependency order.
+kernel/drivers/virtio/virtio_ring.ko
+kernel/drivers/virtio/virtio.ko
+kernel/drivers/virtio/virtio_pci_legacy_dev.ko
+kernel/drivers/virtio/virtio_pci_modern_dev.ko
+kernel/drivers/virtio/virtio_pci.ko
+kernel/net/core/failover.ko
+kernel/drivers/net/net_failover.ko
+kernel/drivers/net/virtio_net.ko
+kernel/net/802/mrp.ko
+kernel/net/8021q/8021q.ko
+kernel/lib/crypto/libcurve25519-generic.ko
+kernel/arch/x86/crypto/curve25519-x86_64.ko
+kernel/lib/crypto/libchacha.ko
+kernel/arch/x86/crypto/chacha-x86_64.ko
+kernel/arch/x86/crypto/poly1305-x86_64.ko
+kernel/lib/crypto/libchacha20poly1305.ko
+kernel/net/ipv6/ip6_udp_tunnel.ko
+kernel/net/ipv4/udp_tunnel.ko
+kernel/net/ipv6/ipv6.ko
+kernel/drivers/net/wireguard/wireguard.ko
+kernel/net/sched/sch_cake.ko
+# crc32c_generic satisfies libcrc32c.ko's softdep ("pre: crc32c") — a soft
+# dependency, so absent from modules.dep's hard-dependency graph entirely;
+# found only by insmod failing with "unknown symbol" and checking
+# `modinfo`'s softdep line by hand.
+kernel/crypto/crc32c_generic.ko
+kernel/net/netfilter/nfnetlink.ko
+kernel/lib/libcrc32c.ko
+kernel/net/netfilter/nf_tables.ko
+kernel/net/ipv6/netfilter/nf_defrag_ipv6.ko
+kernel/net/ipv4/netfilter/nf_defrag_ipv4.ko
+kernel/net/netfilter/nf_conntrack.ko
+kernel/net/netfilter/nf_nat.ko
+kernel/net/netfilter/nft_masq.ko
+kernel/net/netfilter/nft_chain_nat.ko
