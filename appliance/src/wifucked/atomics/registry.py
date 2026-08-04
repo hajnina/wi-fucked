@@ -9,6 +9,7 @@ That recognition is the plug-and-play promise (ADR-002).
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,16 +27,29 @@ class Registry:
         self._clock = clock
         self._state_path = state_path
         self._atomics: dict[str, Atomic] = {}
+        # Guards every read and mutation of ``self._atomics``. The loop thread's
+        # ``observe()`` (called each medium loop from discovery) and the API
+        # thread's ``set_mode()``/``persist()`` (POST /api/atomics/<id>/mode)
+        # touch this dict concurrently with no other synchronisation — a plain
+        # dict mutated from two threads can raise ``RuntimeError: dictionary
+        # changed size during iteration`` on a reader, or hand back a torn view
+        # mid-merge. Mirrors ``fabric/peers.py``'s ``PeerRegistry._guard()``,
+        # minus the ``fcntl.flock`` half: that guards multiple *processes*
+        # sharing a peers file, which does not apply here — the appliance
+        # daemon is single-process, so a threading.Lock is sufficient.
+        self._lock = threading.Lock()
         if state_path:
             self._load()
 
     # -- access ---------------------------------------------------------------
 
     def all(self) -> list[Atomic]:
-        return sorted(self._atomics.values(), key=lambda a: (not a.present, a.label))
+        with self._lock:
+            return sorted(self._atomics.values(), key=lambda a: (not a.present, a.label))
 
     def get(self, atomic_id: str) -> Atomic | None:
-        return self._atomics.get(atomic_id)
+        with self._lock:
+            return self._atomics.get(atomic_id)
 
     def present(self) -> list[Atomic]:
         return [a for a in self.all() if a.present]
@@ -57,78 +71,100 @@ class Registry:
         """
         now = self._clock.now()
         seen_ids = set()
+        # Collected inside the lock, logged outside it — logging is I/O and
+        # need not happen while another thread is blocked on the registry.
+        discovered: list[Atomic] = []
+        returned: list[Atomic] = []  # the *known* (pre-merge) atomic
+        disappeared: list[Atomic] = []
 
-        for fresh in seen:
-            seen_ids.add(fresh.id)
-            known = self._atomics.get(fresh.id)
-            if known is None:
+        with self._lock:
+            for fresh in seen:
+                seen_ids.add(fresh.id)
+                known = self._atomics.get(fresh.id)
+                if known is None:
+                    self._atomics[fresh.id] = replace(
+                        fresh, first_seen=now, last_seen=now, present=True
+                    )
+                    discovered.append(fresh)
+                    continue
+
+                was_absent = not known.present
                 self._atomics[fresh.id] = replace(
-                    fresh, first_seen=now, last_seen=now, present=True
+                    known,
+                    label=fresh.label,
+                    ifname=fresh.ifname,
+                    attributes=fresh.attributes,
+                    present=True,
+                    last_seen=now,
+                    health=fresh.health if was_absent else known.health,
+                    # Sticky: once actually connected to, always considered so —
+                    # a later scan reporting "not connected right now" must not
+                    # erase that this atomic is worth remembering (persist() below
+                    # relies on this to bound what gets written to disk).
+                    ever_connected=known.ever_connected or fresh.ever_connected,
                 )
-                log.info(
-                    "Discovered new connection",
-                    extra={
-                        "workflow": "wan_discovery",
-                        "state": "completed",
-                        "intent": "surface a new connection for the user to classify",
-                        "atomic_id": fresh.id,
-                        "kind": str(fresh.kind),
-                        "label": fresh.label,
-                        "mode": str(fresh.mode),
-                    },
-                )
-                continue
+                if was_absent:
+                    returned.append(known)
 
-            was_absent = not known.present
-            self._atomics[fresh.id] = replace(
-                known,
-                label=fresh.label,
-                ifname=fresh.ifname,
-                attributes=fresh.attributes,
-                present=True,
-                last_seen=now,
-                health=fresh.health if was_absent else known.health,
-                # Sticky: once actually connected to, always considered so —
-                # a later scan reporting "not connected right now" must not
-                # erase that this atomic is worth remembering (persist() below
-                # relies on this to bound what gets written to disk).
-                ever_connected=known.ever_connected or fresh.ever_connected,
+            for atomic in list(self._atomics.values()):
+                if atomic.present and atomic.id not in seen_ids:
+                    self._atomics[atomic.id] = replace(
+                        atomic, present=False, health=Health.ABSENT, ifname=None
+                    )
+                    disappeared.append(atomic)
+
+        for fresh in discovered:
+            log.info(
+                "Discovered new connection",
+                extra={
+                    "workflow": "wan_discovery",
+                    "state": "completed",
+                    "intent": "surface a new connection for the user to classify",
+                    "atomic_id": fresh.id,
+                    "kind": str(fresh.kind),
+                    "label": fresh.label,
+                    "mode": str(fresh.mode),
+                },
             )
-            if was_absent:
-                log.info(
-                    "Known connection returned; restoring previous policy",
-                    extra={
-                        "workflow": "wan_discovery",
-                        "state": "completed",
-                        "intent": "recognise a connection without reconfiguration",
-                        "atomic_id": fresh.id,
-                        "label": fresh.label,
-                        "mode": str(known.mode),
-                        "absent_for_s": round(now - (known.last_seen or now), 1),
-                    },
-                )
-
-        for atomic in list(self._atomics.values()):
-            if atomic.present and atomic.id not in seen_ids:
-                self._atomics[atomic.id] = replace(
-                    atomic, present=False, health=Health.ABSENT, ifname=None
-                )
-                log.warning(
-                    "Connection disappeared",
-                    extra={
-                        "workflow": "wan_discovery",
-                        "state": "completed",
-                        "intent": "stop allocating traffic to a vanished connection",
-                        "atomic_id": atomic.id,
-                        "label": atomic.label,
-                        "mode": str(atomic.mode),
-                        "reason": "not present in discovery sweep",
-                    },
-                )
+        for known in returned:
+            log.info(
+                "Known connection returned; restoring previous policy",
+                extra={
+                    "workflow": "wan_discovery",
+                    "state": "completed",
+                    "intent": "recognise a connection without reconfiguration",
+                    "atomic_id": known.id,
+                    "label": known.label,
+                    "mode": str(known.mode),
+                    "absent_for_s": round(now - (known.last_seen or now), 1),
+                },
+            )
+        for atomic in disappeared:
+            log.warning(
+                "Connection disappeared",
+                extra={
+                    "workflow": "wan_discovery",
+                    "state": "completed",
+                    "intent": "stop allocating traffic to a vanished connection",
+                    "atomic_id": atomic.id,
+                    "label": atomic.label,
+                    "mode": str(atomic.mode),
+                    "reason": "not present in discovery sweep",
+                },
+            )
 
     def set_mode(self, atomic_id: str, mode: Mode) -> Atomic | None:
-        atomic = self._atomics.get(atomic_id)
-        if atomic is None:
+        with self._lock:
+            atomic = self._atomics.get(atomic_id)
+            if atomic is None:
+                found = False
+            else:
+                previous = atomic.mode
+                self._atomics[atomic_id] = replace(atomic, mode=mode)
+                updated = self._atomics[atomic_id]
+                found = True
+
+        if not found:
             log.warning(
                 "Mode change requested for unknown connection",
                 extra={
@@ -141,8 +177,6 @@ class Registry:
             )
             return None
 
-        previous = atomic.mode
-        self._atomics[atomic_id] = replace(atomic, mode=mode)
         log.info(
             "Connection mode changed",
             extra={
@@ -156,18 +190,22 @@ class Registry:
             },
         )
         self.persist()
-        return self._atomics[atomic_id]
+        return updated
 
     def update_capacity(self, atomic_id: str, capacity: Capacity) -> None:
-        atomic = self._atomics.get(atomic_id)
-        if atomic is not None:
-            self._atomics[atomic_id] = replace(atomic, capacity=capacity)
+        with self._lock:
+            atomic = self._atomics.get(atomic_id)
+            if atomic is not None:
+                self._atomics[atomic_id] = replace(atomic, capacity=capacity)
 
     def update_health(self, atomic_id: str, health: Health) -> None:
-        atomic = self._atomics.get(atomic_id)
-        if atomic is None or atomic.health is health:
-            return
-        self._atomics[atomic_id] = replace(atomic, health=health)
+        with self._lock:
+            atomic = self._atomics.get(atomic_id)
+            if atomic is None or atomic.health is health:
+                return
+            previous_health = atomic.health
+            self._atomics[atomic_id] = replace(atomic, health=health)
+            label = atomic.label
         log.info(
             "Connection health changed",
             extra={
@@ -175,25 +213,26 @@ class Registry:
                 "state": "completed",
                 "intent": "track whether a connection can carry traffic",
                 "atomic_id": atomic_id,
-                "label": atomic.label,
-                "health_from": str(atomic.health),
+                "label": label,
+                "health_from": str(previous_health),
                 "health_to": str(health),
             },
         )
 
     def add_cost(self, atomic_id: str, *, consumed: int = 0, liveness: int = 0) -> None:
-        atomic = self._atomics.get(atomic_id)
-        if atomic is None:
-            return
-        cost = atomic.cost
-        self._atomics[atomic_id] = replace(
-            atomic,
-            cost=replace(
-                cost,
-                consumed_bytes=cost.consumed_bytes + consumed,
-                liveness_bytes=cost.liveness_bytes + liveness,
-            ),
-        )
+        with self._lock:
+            atomic = self._atomics.get(atomic_id)
+            if atomic is None:
+                return
+            cost = atomic.cost
+            self._atomics[atomic_id] = replace(
+                atomic,
+                cost=replace(
+                    cost,
+                    consumed_bytes=cost.consumed_bytes + consumed,
+                    liveness_bytes=cost.liveness_bytes + liveness,
+                ),
+            )
 
     # -- persistence ----------------------------------------------------------
     #
@@ -214,7 +253,16 @@ class Registry:
     def persist(self) -> None:
         if not self._state_path:
             return
-        candidates = [a for a in self._atomics.values() if self._worth_persisting(a)]
+        # Snapshot under the lock, then build and write the payload outside it —
+        # JSON serialisation and the disk write are comparatively slow, and
+        # holding the lock across them would block the loop thread's observe()
+        # (or the API thread's set_mode()) for the duration of a write.
+        # ``Atomic`` instances are only ever replaced wholesale via
+        # dataclasses.replace(), never mutated in place, so a snapshot taken
+        # under the lock is safe to read afterwards without it.
+        with self._lock:
+            total = len(self._atomics)
+            candidates = [a for a in self._atomics.values() if self._worth_persisting(a)]
         payload = {
             "version": 1,
             "atomics": {
@@ -245,9 +293,9 @@ class Registry:
                 "workflow": "registry_persist",
                 "state": "processing",
                 "intent": "remember user mode choices and ever-connected atomics across reboot",
-                "total_atomics": len(self._atomics),
+                "total_atomics": total,
                 "persisted_atomics": len(candidates),
-                "skipped_atomics": len(self._atomics) - len(candidates),
+                "skipped_atomics": total - len(candidates),
             },
         )
         try:

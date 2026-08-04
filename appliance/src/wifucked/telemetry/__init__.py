@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -116,6 +117,18 @@ class Telemetry:
         #: Kept in memory so the dashboard can render live data that has not been
         #: flushed yet, without reading across two stores.
         self._recent: list[Decision] = []
+        # Guards ``_buffer``, ``_recent``, and every use of ``_conn``. The loop
+        # thread appends to the buffer via record_decision()/record_event()/
+        # record_sample() (called throughout allocator/, discovery/, etc.) and
+        # periodically flushes it to sqlite from tick(); the API thread reads
+        # via recent_decisions() (GET /api/decisions and the diagnostics
+        # bundle) — concurrently, with no other synchronisation. sqlite is
+        # opened with check_same_thread=False, but that only lifts the
+        # same-thread restriction; it does not make concurrent statement
+        # execution on one Connection object safe, so conn access needs the
+        # same external serialisation as the in-memory buffer. Same pattern as
+        # ``atomics.Registry._lock`` / ``fabric/peers.py``'s ``_guard()``.
+        self._lock = threading.Lock()
 
         if db_path is not None:
             self._open(db_path)
@@ -132,9 +145,10 @@ class Telemetry:
             inputs=inputs,
             thresholds=thresholds or {},
         )
-        self._buffer.decisions.append(decision)
-        self._recent.append(decision)
-        del self._recent[:-200]
+        with self._lock:
+            self._buffer.decisions.append(decision)
+            self._recent.append(decision)
+            del self._recent[:-200]
         log.info(
             "Allocation decision recorded",
             extra={
@@ -149,7 +163,8 @@ class Telemetry:
         return decision
 
     def record_event(self, kind: str, detail: dict, subject: str | None = None) -> None:
-        self._buffer.events.append((self._clock.wall(), kind, subject, detail))
+        with self._lock:
+            self._buffer.events.append((self._clock.wall(), kind, subject, detail))
 
     def record_sample(
         self,
@@ -159,40 +174,44 @@ class Telemetry:
         rtt_ms: float | None = None,
         loss_pct: float | None = None,
     ) -> None:
-        self._buffer.samples.append(
-            (self._clock.wall(), atomic_id, down_bps, up_bps, rtt_ms, loss_pct)
-        )
+        with self._lock:
+            self._buffer.samples.append(
+                (self._clock.wall(), atomic_id, down_bps, up_bps, rtt_ms, loss_pct)
+            )
 
     # -- reading --------------------------------------------------------------
 
     def recent_decisions(self, limit: int = 50) -> list[Decision]:
-        if self._conn is None:
-            return list(reversed(self._recent[-limit:]))
+        with self._lock:
+            if self._conn is None:
+                return list(reversed(self._recent[-limit:]))
 
-        stored: list[Decision] = []
-        try:
-            rows = self._conn.execute(
-                "SELECT at, action, reason, inputs, thresholds "
-                "FROM decisions ORDER BY at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-            stored = [Decision(r[0], r[1], r[2], json.loads(r[3]), json.loads(r[4])) for r in rows]
-        except (sqlite3.Error, json.JSONDecodeError) as exc:
-            log.error(
-                "Could not read decision journal; serving in-memory decisions only",
-                extra={
-                    "workflow": "telemetry_read",
-                    "state": "failed",
-                    "intent": "show the user why the appliance acted",
-                    "reason": "query failed",
-                    "error": str(exc),
-                },
-                exc_info=True,
-            )
+            stored: list[Decision] = []
+            try:
+                rows = self._conn.execute(
+                    "SELECT at, action, reason, inputs, thresholds "
+                    "FROM decisions ORDER BY at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                stored = [
+                    Decision(r[0], r[1], r[2], json.loads(r[3]), json.loads(r[4])) for r in rows
+                ]
+            except (sqlite3.Error, json.JSONDecodeError) as exc:
+                log.error(
+                    "Could not read decision journal; serving in-memory decisions only",
+                    extra={
+                        "workflow": "telemetry_read",
+                        "state": "failed",
+                        "intent": "show the user why the appliance acted",
+                        "reason": "query failed",
+                        "error": str(exc),
+                    },
+                    exc_info=True,
+                )
 
-        # Unflushed decisions are newer than anything in the database.
-        merged = list(reversed(self._buffer.decisions)) + stored
-        return merged[:limit]
+            # Unflushed decisions are newer than anything in the database.
+            merged = list(reversed(self._buffer.decisions)) + stored
+            return merged[:limit]
 
     # -- persistence ----------------------------------------------------------
 
@@ -202,60 +221,69 @@ class Telemetry:
             self.flush()
 
     def flush(self) -> None:
-        self._last_flush = self._clock.now()
-        if self._conn is None or self._buffer.empty():
-            self._buffer = _Buffer()
-            return
+        # Everything here touches either the shared buffer or the shared sqlite
+        # connection, both of which need serialising against record_*() (loop
+        # thread, called from allocator/discovery/etc.) and recent_decisions()
+        # (API thread). ``with self._conn`` below is sqlite's own transaction
+        # context manager (commit/rollback), not a thread lock — it does not
+        # protect against a second thread using the same Connection object
+        # concurrently, hence the outer threading.Lock.
+        with self._lock:
+            self._last_flush = self._clock.now()
+            if self._conn is None or self._buffer.empty():
+                self._buffer = _Buffer()
+                return
 
-        buffered = self._buffer
-        self._buffer = _Buffer()
-        try:
-            with self._conn:
-                self._conn.executemany(
-                    "INSERT INTO decisions (at, action, reason, inputs, thresholds) "
-                    "VALUES (?,?,?,?,?)",
-                    [
-                        (
-                            d.at,
-                            d.action,
-                            d.reason,
-                            json.dumps(d.inputs),
-                            json.dumps(d.thresholds),
-                        )
-                        for d in buffered.decisions
-                    ],
+            buffered = self._buffer
+            self._buffer = _Buffer()
+            try:
+                with self._conn:
+                    self._conn.executemany(
+                        "INSERT INTO decisions (at, action, reason, inputs, thresholds) "
+                        "VALUES (?,?,?,?,?)",
+                        [
+                            (
+                                d.at,
+                                d.action,
+                                d.reason,
+                                json.dumps(d.inputs),
+                                json.dumps(d.thresholds),
+                            )
+                            for d in buffered.decisions
+                        ],
+                    )
+                    self._conn.executemany(
+                        "INSERT INTO events (at, kind, subject, detail) VALUES (?,?,?,?)",
+                        [(at, kind, subj, json.dumps(d)) for at, kind, subj, d in buffered.events],
+                    )
+                    self._conn.executemany(
+                        "INSERT INTO samples (at, atomic_id, down_bps, up_bps, rtt_ms, loss_pct) "
+                        "VALUES (?,?,?,?,?,?)",
+                        buffered.samples,
+                    )
+                self._trim()
+            except sqlite3.Error as exc:
+                log.error(
+                    "Telemetry flush failed; the buffered window is lost",
+                    extra={
+                        "workflow": "telemetry_flush",
+                        "state": "failed",
+                        "intent": "persist telemetry across reboot",
+                        "decisions": len(buffered.decisions),
+                        "events": len(buffered.events),
+                        "samples": len(buffered.samples),
+                        "reason": "sqlite write failed",
+                        "error": str(exc),
+                    },
+                    exc_info=True,
                 )
-                self._conn.executemany(
-                    "INSERT INTO events (at, kind, subject, detail) VALUES (?,?,?,?)",
-                    [(at, kind, subj, json.dumps(d)) for at, kind, subj, d in buffered.events],
-                )
-                self._conn.executemany(
-                    "INSERT INTO samples (at, atomic_id, down_bps, up_bps, rtt_ms, loss_pct) "
-                    "VALUES (?,?,?,?,?,?)",
-                    buffered.samples,
-                )
-            self._trim()
-        except sqlite3.Error as exc:
-            log.error(
-                "Telemetry flush failed; the buffered window is lost",
-                extra={
-                    "workflow": "telemetry_flush",
-                    "state": "failed",
-                    "intent": "persist telemetry across reboot",
-                    "decisions": len(buffered.decisions),
-                    "events": len(buffered.events),
-                    "samples": len(buffered.samples),
-                    "reason": "sqlite write failed",
-                    "error": str(exc),
-                },
-                exc_info=True,
-            )
 
     def close(self) -> None:
         self.flush()
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     def _open(self, db_path: Path) -> None:
         try:
@@ -283,7 +311,11 @@ class Telemetry:
             )
 
     def _trim(self) -> None:
-        """Ring-buffer retention: the database is bounded by construction."""
+        """Ring-buffer retention: the database is bounded by construction.
+
+        Private helper called only from ``flush()``, which already holds
+        ``self._lock`` — it does not acquire the lock itself.
+        """
         if self._conn is None:
             return
         with self._conn:
