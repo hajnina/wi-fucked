@@ -1,3 +1,25 @@
+## v1.2.3 — 2026-08-04
+
+### fix
+- dedupe SSID-only atomics, stop wearing the SD card (#32)
+- table-per-atomic routing, skip zero-ceiling shares, honor quiesced, shape from up_bps (#31)
+- hysteresis stuck-in-ACTIVE, duplicate backup-is-primary shares, ARMING decision record lies (#30)
+- restore backlog tracker (previous commit corrupted it to a literal shell string)
+- feed the systemd watchdog on the fast loop (#25)
+- set real version at build time (#24)
+
+### docs
+- mark items 4 and 10 merged
+- mark item 6 merged
+- mark item 3 merged
+- mark item 2 merged
+- add ordered backlog for traffic-passing blockers (#23)
+- changelog for v1.2.2 [skip ci]
+
+### test
+- drive harness assertions from Enforcer/MockAp (#28)
+
+
 ## v1.2.2 — 2026-08-02
 
 ### fix
