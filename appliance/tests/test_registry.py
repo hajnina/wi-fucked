@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import threading
 
 from wifucked.atomics import Atomic, Capacity, Health, Kind, Mode, Registry
-from wifucked.clock import VirtualClock
+from wifucked.clock import RealClock, VirtualClock
 
 
 def _atomic(atomic_id: str = "wifi:hotel", **kwargs) -> Atomic:
@@ -224,3 +225,106 @@ class TestBoundedPersistence:
         restored.persist()
         payload = json.loads(path.read_text())
         assert list(payload["atomics"]) == ["wifi:home"]
+
+
+class TestConcurrency:
+    """Backlog item 7: the loop thread and the API thread hit this registry at
+    the same time with no other synchronisation — ``observe()`` from
+    discovery, ``set_mode()``/``persist()`` from the API's mode-change route.
+    A single-threaded test cannot exercise a race; these spin up real threads
+    against a shared ``Registry`` and hammer it, using ``RealClock`` (not
+    ``VirtualClock``) so wall-clock time actually advances across threads.
+    """
+
+    def test_observe_and_set_mode_from_separate_threads_do_not_raise_or_corrupt(self, tmp_path):
+        path = tmp_path / "atomics.json"
+        registry = Registry(RealClock(), path)
+        ids = [f"wifi:atomic-{i}" for i in range(20)]
+        errors: list[BaseException] = []
+        stop = threading.Event()
+
+        def discovery_loop():
+            # Mimics the medium loop's discover_once() -> registry.observe().
+            try:
+                for _ in range(200):
+                    registry.observe([_atomic(i) for i in ids])
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                stop.set()
+
+        def api_mode_changes():
+            # Mimics concurrent POST /api/atomics/<id>/mode requests, which
+            # call set_mode() (mutates + persists) from Flask's thread pool.
+            try:
+                i = 0
+                while not stop.is_set():
+                    atomic_id = ids[i % len(ids)]
+                    mode = Mode.NORMAL if i % 2 == 0 else Mode.BACKUP
+                    registry.set_mode(atomic_id, mode)
+                    i += 1
+            except BaseException as exc:
+                errors.append(exc)
+
+        def api_reads():
+            # Mimics GET /api/state reading a live view while the above mutate.
+            try:
+                while not stop.is_set():
+                    for atomic in registry.all():
+                        assert atomic.id in ids
+                    registry.present()
+                    registry.normal_pool()
+                    registry.backups()
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=discovery_loop),
+            threading.Thread(target=api_mode_changes),
+            threading.Thread(target=api_reads),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert not any(t.is_alive() for t in threads), "a thread hung — likely a deadlock"
+        assert errors == [], f"concurrent access raised: {errors}"
+
+        # Every atomic discovered must have survived intact, with a mode the
+        # writer threads actually set — no torn dict entries.
+        assert len(registry.all()) == len(ids)
+        for atomic in registry.all():
+            assert atomic.mode in (Mode.NORMAL, Mode.BACKUP)
+
+        # The last persist() written to disk must be readable, valid JSON that
+        # agrees with in-memory state — a torn write under concurrent
+        # persist() calls would produce truncated or invalid JSON here.
+        payload = json.loads(path.read_text())
+        assert set(payload["atomics"]) == set(ids)
+
+    def test_concurrent_add_cost_loses_no_updates(self):
+        """Read-modify-write from many threads must not drop increments."""
+        registry = Registry(RealClock())
+        registry.observe([_atomic()])
+        threads_n, increments_per_thread = 8, 200
+        errors: list[BaseException] = []
+
+        def hammer():
+            try:
+                for _ in range(increments_per_thread):
+                    registry.add_cost("wifi:hotel", consumed=1, liveness=1)
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=hammer) for _ in range(threads_n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert errors == []
+        atomic = registry.get("wifi:hotel")
+        expected = threads_n * increments_per_thread
+        assert atomic.cost.consumed_bytes == expected, "a lost update means the lock is not held"
+        assert atomic.cost.liveness_bytes == expected
