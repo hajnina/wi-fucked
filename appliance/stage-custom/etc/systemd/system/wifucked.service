@@ -14,14 +14,17 @@ After=network.target wifucked-firstboot.service
 Wants=network.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 Environment=PYTHONPATH=/opt/wifucked/current/src
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 -m wifucked
 Restart=always
 RestartSec=5
 # A wedged control plane should be restarted, not left wedged. The network keeps
-# working across the restart either way.
+# working across the restart either way. Daemon.run_forever() feeds this every
+# fast-loop tick via sd_notify(WATCHDOG=1) (wifucked/watchdog.py); Type=notify
+# + NotifyAccess=main above make that keepalive (and READY=1 at startup) count.
 WatchdogSec=120
 StateDirectory=wifucked
 

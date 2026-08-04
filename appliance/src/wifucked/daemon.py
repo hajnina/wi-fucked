@@ -32,6 +32,7 @@ from wifucked.probe import LinuxProber, Prober, ScriptedProber, fold, quality_of
 from wifucked.radio import RadioManager, RadioState
 from wifucked.telemetry import Telemetry
 from wifucked.tunnel import MockTunnel, Tunnel, WireGuardTunnel
+from wifucked.watchdog import sd_notify
 
 log = get_logger("daemon")
 
@@ -164,8 +165,15 @@ class Daemon:
 
     def run_forever(self) -> None:
         self.start()
+        # Tell systemd we're up (no-op unless $NOTIFY_SOCKET is set, i.e.
+        # unless we're actually running under a Type=notify unit).
+        sd_notify("READY=1")
         while not self._stop.is_set():
             self.tick()
+            # Feed the watchdog once per fast-loop iteration. WatchdogSec=120
+            # in the unit file is only a real liveness contract if this keeps
+            # happening — see docs/backlog/traffic-blockers.md item 2.
+            sd_notify("WATCHDOG=1")
             self.clock.sleep(self.config.loops.fast_s)
 
     # -- loops ----------------------------------------------------------------
