@@ -402,6 +402,27 @@ jobs:
         with:
           context: fabric
           push: ${{ inputs.publish }}
+          load: true
+          build-args: |
+            FABRIC_VERSION=${{ inputs.version }}
           tags: ghcr.io/${{ steps.repo.outputs.name }}/fabric:${{ inputs.version }}
           cache-from: type=gha
           cache-to: ${{ steps.speedtest.outputs.fast_uplink == 'true' && 'type=gha,mode=max' || '' }}
+
+      # Confirms fabric.__version__ actually got the real version baked in,
+      # and that it clears WIFUCKED_FABRIC_MIN (0.1.0) — the floor
+      # appliance/tunnel/__init__.py:fabric_compatible() enforces at attach
+      # time. Catches exactly the bug this job used to ship silently: every
+      # fabric image reporting "0.0.0-dev", which fails that check.
+      - name: Verify injected fabric version
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint python \
+            "ghcr.io/${{ steps.repo.outputs.name }}/fabric:${{ inputs.version }}" -c '
+          from fabric import __version__
+          expected = "${{ inputs.version }}"
+          assert __version__ == expected, f"baked version {__version__!r} != {expected!r}"
+          core = tuple(int(p) for p in __version__.split("-", 1)[0].split("+", 1)[0].split("."))
+          assert core >= (0, 1, 0), f"baked version {__version__} fails WIFUCKED_FABRIC_MIN=0.1.0"
+          print(f"fabric version OK: {__version__}")
+          '
