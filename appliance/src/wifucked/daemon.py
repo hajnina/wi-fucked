@@ -1,10 +1,14 @@
 """The control loops.
 
-Three cadences over one state store:
+Three cadences over one state store, plus one standalone cadence:
 
 * **fast** (~1 s) — liveness, failover, hysteresis timers, enforcement reconciliation
 * **medium** (~10 s) — capacity re-estimation, demand, allocation decisions
-* **slow** (~5 min) — telemetry flush, rollups, learning
+* **slow** (~5 min) — registry persistence, rollups, learning
+* **telemetry** (~60 s, matches `Telemetry.flush_interval_s`) — decision/event/
+  sample flush to sqlite. Scheduled independently of the three loops above
+  because none of their cadences match the documented flush interval — see
+  `tick()` and docs/backlog/traffic-blockers.md item 12.
 
 Splitting them matters. Failover must be fast, but re-deciding allocation every
 second would flap, and learning is expensive enough that it must not sit in the
@@ -105,7 +109,11 @@ class Daemon:
         self.radio_state: RadioState | None = None
 
         self._stop = threading.Event()
-        self._next = {"fast": 0.0, "medium": 0.0, "slow": 0.0}
+        # "telemetry" is its own scheduler entry, not tied to fast/medium/slow
+        # (see tick()'s docstring below and docs/backlog/traffic-blockers.md
+        # item 12) — none of the three loop cadences match the documented
+        # `flush_interval_s`, so telemetry gets a cadence of its own.
+        self._next = {"fast": 0.0, "medium": 0.0, "slow": 0.0, "telemetry": 0.0}
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -216,6 +224,16 @@ class Daemon:
         if now >= self._next["slow"]:
             self._next["slow"] = now + self.config.loops.slow_s
             self._slow_loop()
+        # Telemetry gets its own cadence entry rather than riding the slow
+        # loop (~300s): the documented flush_interval_s is 60s, and none of
+        # fast/medium/slow match that, so tying it to any one of them either
+        # flushes 5x slower than documented (slow loop) or flushes far more
+        # often than needed (fast/medium loop, though telemetry.tick() itself
+        # gates on flush_interval_s so that would only be wasteful, not
+        # incorrect). See docs/backlog/traffic-blockers.md item 12.
+        if now >= self._next["telemetry"]:
+            self._next["telemetry"] = now + self.telemetry.flush_interval_s
+            self.telemetry.tick()
 
     def _fast_loop(self) -> None:
         atomics = self.registry.all()
@@ -244,7 +262,10 @@ class Daemon:
         self._spend_liveness_budget()
 
     def _slow_loop(self) -> None:
-        self.telemetry.tick()
+        # Telemetry flushing runs on its own cadence entry in tick(), not
+        # here — see the comment there and item 12 in
+        # docs/backlog/traffic-blockers.md. registry.persist() stays on the
+        # slow loop; it has no documented cadence of its own to honor.
         self.registry.persist()
 
         facts = self.hal.system.facts()

@@ -268,6 +268,52 @@ class TestFastLoopNotStarvedByProbing:
         )
 
 
+class TestTelemetryCadence:
+    """Backlog item 12, bug 1: `telemetry.tick()` used to only run from the
+    slow loop (~300s per `LoopConfig.slow_s`), making the actual flush cadence
+    5x slower than the documented `flush_interval_s` (60s). It now has its own
+    scheduler entry in `Daemon.tick()`, independent of fast/medium/slow.
+    Driven with a `VirtualClock` so this proves the ~60s cadence without
+    waiting on a real clock.
+    """
+
+    def test_flush_actually_happens_at_roughly_sixty_seconds_not_three_hundred(self, tmp_path):
+        clock = VirtualClock()
+        db_path = tmp_path / "telemetry.sqlite3"
+        telemetry = Telemetry(clock, db_path, flush_interval_s=60.0)
+        daemon = Daemon(
+            Config(),
+            hal=build_hal(force_mock=True),
+            clock=clock,
+            telemetry=telemetry,
+            persist=False,
+        )
+        daemon.start()
+
+        # Put something in the buffer so a flush is observable as "buffer
+        # drained to sqlite", the same signal flush() itself uses.
+        telemetry.record_event("test_event", {"note": "cadence probe"})
+        assert not telemetry._buffer.empty()
+
+        flushed_at: float | None = None
+        for _ in range(120):  # up to 2 minutes of virtual time
+            daemon.tick()
+            clock.advance(daemon.config.loops.fast_s)
+            if telemetry._buffer.empty():
+                flushed_at = clock.now()
+                break
+
+        assert flushed_at is not None, "the buffered event was never flushed within 2 minutes"
+        assert flushed_at < 120.0, "flush must land well before the old 300s slow-loop cadence"
+        # Give real headroom around the documented 60s (fast-loop tick
+        # granularity plus daemon.start()'s own initial work), but it must be
+        # nowhere near the 300s slow loop this bug used to tie it to.
+        assert 55.0 <= flushed_at <= 70.0, (
+            f"flush landed at t={flushed_at}s; expected close to the documented "
+            "60s flush_interval_s, not the old ~300s slow-loop cadence"
+        )
+
+
 class TestCapacityEstimation:
     def test_idle_observation_does_not_raise_the_estimate(self):
         """An unused link is not a slow link."""

@@ -215,8 +215,24 @@ class Telemetry:
 
     # -- persistence ----------------------------------------------------------
 
+    @property
+    def flush_interval_s(self) -> float:
+        """The documented flush cadence, exposed so the daemon can schedule
+        ``tick()`` calls to actually match it (docs/backlog/traffic-blockers.md
+        item 12) instead of hardcoding a duplicate of this number elsewhere.
+        """
+        return self._flush_interval
+
     def tick(self) -> None:
-        """Called from the slow loop. Flushes when the interval has elapsed."""
+        """Flushes once ``flush_interval_s`` has elapsed since the last flush.
+
+        Safe to call more often than that — this is a no-op until the interval
+        is up, the same self-gating pattern as ``Daemon.tick()``'s own
+        ``_next[...]`` scheduler. The daemon calls this from a dedicated
+        cadence entry in that scheduler (not tied to the fast/medium/slow
+        loops) so the *actual* flush rate matches this documented interval
+        regardless of how the three loop cadences are tuned.
+        """
         if self._clock.now() - self._last_flush >= self._flush_interval:
             self.flush()
 
