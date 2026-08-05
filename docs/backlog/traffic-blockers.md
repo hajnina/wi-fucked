@@ -199,7 +199,7 @@ handler/level in the fabric app so `log.info` isn't silently dropped under
 gunicorn's default level.
 
 ### 12. fix(telemetry): flush on the fast loop, restore capacity confidence across restarts
-**Status:** in progress
+**Status:** merged
 
 `daemon.py:211`: `telemetry.tick()` only runs in the slow loop, making the
 documented 60s `flush_interval_s` effectively 300s — call it from the fast
