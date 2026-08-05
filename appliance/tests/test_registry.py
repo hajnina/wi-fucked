@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import threading
 
+import pytest
+
 from wifucked.atomics import Atomic, Capacity, Health, Kind, Mode, Registry
 from wifucked.clock import RealClock, VirtualClock
+from wifucked.probe import CONFIDENCE_HALF_LIFE_S, decay_confidence
 
 
 def _atomic(atomic_id: str = "wifi:hotel", **kwargs) -> Atomic:
@@ -142,6 +145,108 @@ class TestPersistence:
 
         restored = Registry(VirtualClock(), path)
         assert not restored.get("wifi:hotel").present
+
+    def test_capacity_confidence_and_measured_at_round_trip(self, tmp_path):
+        """Backlog item 12, bug 2: `Capacity.known` must not reset to False on
+        every restart. Before this fix, persist() dropped confidence/measured_at
+        and reload always fell back to the dataclass defaults (confidence=0.0),
+        so a freshly-restored, well-measured atomic looked completely unknown.
+        """
+        path = tmp_path / "atomics.json"
+        clock = VirtualClock()
+        registry = Registry(clock, path)
+        registry.observe([_atomic()])
+        registry.set_mode("wifi:hotel", Mode.NORMAL)
+        measured_at = clock.now()
+        registry.update_capacity(
+            "wifi:hotel",
+            Capacity(down_bps=9_000_000, up_bps=2_000_000, confidence=0.9, measured_at=measured_at),
+        )
+
+        # Persist and reload immediately (no time passes) — the fresh
+        # measurement must come back exactly as fresh.
+        registry.persist()
+        restored_clock = VirtualClock()
+        restored = Registry(restored_clock, path)
+        atomic = restored.get("wifi:hotel")
+
+        assert atomic.capacity.confidence == 0.9
+        assert atomic.capacity.known is True, (
+            "a well-measured atomic must not look unknown after restart"
+        )
+        assert atomic.capacity.down_bps == 9_000_000
+        # decay_confidence() at t=0 elapsed must return the full, undecayed
+        # confidence — proves measured_at was reconstructed as "just now",
+        # not fabricated as ancient or left None.
+        assert decay_confidence(atomic.capacity, restored_clock.now()) == 0.9
+
+    def test_stale_persisted_measured_at_decays_correctly_on_reload(self, tmp_path):
+        """A capacity measurement that was already old when the daemon
+        restarted must decay as if that real elapsed time had passed — not
+        read as freshly measured (which `measured_at` naively surviving a
+        CLOCK_MONOTONIC reset across a reboot would cause), and not be
+        silently discarded either.
+        """
+        path = tmp_path / "atomics.json"
+        clock = VirtualClock()
+        registry = Registry(clock, path)
+        registry.observe([_atomic()])
+        registry.set_mode("wifi:hotel", Mode.NORMAL)
+        registry.update_capacity(
+            "wifi:hotel",
+            Capacity(down_bps=9_000_000, up_bps=2_000_000, confidence=0.9, measured_at=clock.now()),
+        )
+
+        # The measurement was already one full confidence half-life old at
+        # persist time (e.g. the daemon sat idle a while before persisting).
+        clock.advance(CONFIDENCE_HALF_LIFE_S)
+        registry.persist()
+
+        # And then the process was down for another full half-life before the
+        # next boot — modeled with a fresh VirtualClock whose wall start is
+        # advanced by that much, mimicking a real reboot's wall-clock gap
+        # while its monotonic clock (`now()`) restarts from 0.
+        next_boot_clock = VirtualClock(start=0.0, wall_start=clock.wall() + CONFIDENCE_HALF_LIFE_S)
+        restored = Registry(next_boot_clock, path)
+        atomic = restored.get("wifi:hotel")
+
+        assert atomic.capacity.measured_at is not None
+        # Total real elapsed age is two half-lives: confidence should have
+        # decayed to about a quarter of the original 0.9, not read as fresh
+        # (which a naive raw-monotonic persist would produce here, since
+        # next_boot_clock.now() == 0 is *less* than any positive measured_at).
+        decayed = decay_confidence(atomic.capacity, next_boot_clock.now())
+        assert decayed == pytest.approx(0.9 * 0.25, rel=0.05)
+        assert decayed < 0.9, "a stale measurement must not read as freshly measured after reload"
+
+    def test_missing_persisted_at_wall_degrades_gracefully(self, tmp_path):
+        """A state file written before this fix (no `persisted_at_wall`,
+        capacity dict has only down_bps/up_bps) must still load without
+        raising, matching the pre-fix schema's fallback behaviour.
+        """
+        path = tmp_path / "atomics.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "atomics": {
+                        "wifi:hotel": {
+                            "kind": "wifi",
+                            "label": "Hotel WiFi",
+                            "mode": "normal",
+                            "capacity": {"down_bps": 5_000_000, "up_bps": 1_000_000},
+                        }
+                    },
+                }
+            )
+        )
+
+        registry = Registry(VirtualClock(), path)
+        atomic = registry.get("wifi:hotel")
+
+        assert atomic is not None
+        assert atomic.capacity.down_bps == 5_000_000
+        assert atomic.capacity.known is False, "an old-schema entry has no confidence to restore"
 
     def test_survives_a_corrupt_state_file(self, tmp_path):
         path = tmp_path / "atomics.json"

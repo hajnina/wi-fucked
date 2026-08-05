@@ -250,6 +250,27 @@ class Registry:
     def _worth_persisting(self, atomic: Atomic) -> bool:
         return atomic.mode is not Mode.UNUSED or atomic.ever_connected
 
+    @staticmethod
+    def _reconstruct_capacity(
+        entry: dict, elapsed_since_persist: float, now_monotonic: float
+    ) -> Capacity:
+        """Rebuild a `Capacity` from a persisted entry, translating its
+        monotonic-clock `measured_age_s` (see persist()) back into a
+        `measured_at` timestamp valid against *this* process's `Clock.now()`.
+        """
+        measured_age_s = entry.get("measured_age_s")
+        measured_at = (
+            now_monotonic - (measured_age_s + elapsed_since_persist)
+            if measured_age_s is not None
+            else None
+        )
+        return Capacity(
+            down_bps=entry.get("down_bps", 0),
+            up_bps=entry.get("up_bps", 0),
+            confidence=entry.get("confidence", 0.0),
+            measured_at=measured_at,
+        )
+
     def persist(self) -> None:
         if not self._state_path:
             return
@@ -263,8 +284,25 @@ class Registry:
         with self._lock:
             total = len(self._atomics)
             candidates = [a for a in self._atomics.values() if self._worth_persisting(a)]
+        # ``capacity.measured_at`` is a ``Clock.now()`` (monotonic) timestamp,
+        # meaningful only as a difference against another reading from the same
+        # Clock instance in the same process (see clock.py). It cannot be
+        # persisted and reloaded verbatim: CLOCK_MONOTONIC's reference point
+        # does not survive a reboot, so a raw persisted value could come back
+        # *larger* than the freshly-started process's ``now()``, making
+        # ``decay_confidence()``'s ``age = max(0.0, now - measured_at)`` clamp
+        # to 0 — a measurement from hours ago would read as "just measured",
+        # which is a false-confidence bug in the opposite direction from the
+        # one this fix closes (docs/backlog/traffic-blockers.md item 12).
+        # Instead we persist how *stale* each measurement already was at
+        # persist time (``measured_age_s``, monotonic-clock delta, immune to
+        # the reboot discontinuity) plus one wall-clock anchor
+        # (``persisted_at_wall``) for the whole payload, and on load add the
+        # wall-clock time that has passed since to get the true elapsed age.
+        persisted_at_wall = self._clock.wall()
         payload = {
             "version": 1,
+            "persisted_at_wall": persisted_at_wall,
             "atomics": {
                 atomic.id: {
                     "kind": str(atomic.kind),
@@ -274,6 +312,12 @@ class Registry:
                     "capacity": {
                         "down_bps": atomic.capacity.down_bps,
                         "up_bps": atomic.capacity.up_bps,
+                        "confidence": atomic.capacity.confidence,
+                        "measured_age_s": (
+                            max(0.0, self._clock.now() - atomic.capacity.measured_at)
+                            if atomic.capacity.measured_at is not None
+                            else None
+                        ),
                     },
                     "cost": {
                         "metered": atomic.cost.metered,
@@ -339,6 +383,23 @@ class Registry:
 
         from wifucked.atomics.model import Kind  # local import: avoids a cycle at import time
 
+        # See persist()'s comment on why measured_at cannot be persisted
+        # verbatim. ``elapsed_since_persist`` is how much wall-clock time has
+        # passed since this file was written — 0 (and thus a no-op below) for
+        # a normal restart moments after a crash, correctly large after a Pi
+        # sat powered off for a week. Missing/malformed ``persisted_at_wall``
+        # (e.g. a file from before this field existed) degrades to 0, which is
+        # the conservative direction for age (undercounts elapsed time rather
+        # than fabricating a possibly-huge one).
+        persisted_at_wall = payload.get("persisted_at_wall")
+        now_wall = self._clock.wall()
+        elapsed_since_persist = (
+            max(0.0, now_wall - persisted_at_wall)
+            if isinstance(persisted_at_wall, (int, float))
+            else 0.0
+        )
+        now_monotonic = self._clock.now()
+
         for atomic_id, entry in payload.get("atomics", {}).items():
             try:
                 self._atomics[atomic_id] = Atomic(
@@ -348,7 +409,9 @@ class Registry:
                     mode=Mode(entry.get("mode", "unused")),
                     health=Health.ABSENT,
                     ever_connected=entry.get("ever_connected", False),
-                    capacity=Capacity(**entry.get("capacity", {})),
+                    capacity=self._reconstruct_capacity(
+                        entry.get("capacity", {}), elapsed_since_persist, now_monotonic
+                    ),
                     cost=Cost(**entry.get("cost", {})),
                     attributes=entry.get("attributes", {}),
                 )
