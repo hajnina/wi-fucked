@@ -1,3 +1,14 @@
+## v1.3.1 — 2026-08-05
+
+### fix
+- flush on the documented cadence, persist capacity confidence across restarts (#39)
+
+### docs
+- mark item 12 merged — all 14 backlog items closed out
+- changelog for v1.3.0 [skip ci]
+- changelog for v1.3.0 [skip ci]
+
+
 ## v1.3.0 — 2026-08-04
 
 ### feat
