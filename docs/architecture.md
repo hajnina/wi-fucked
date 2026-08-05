@@ -36,18 +36,26 @@ never reconnect because a WAN changed.
 
 ## Control loops
 
-Three loops at different cadences over one shared state store.
+Three loops at different cadences over one shared state store, plus one
+standalone cadence for telemetry.
 
 | Loop | Period | Responsibility |
 |---|---|---|
 | **Fast** | ~1 s | Liveness, failover, hysteresis timers, enforcement reconciliation |
 | **Medium** | ~10 s | Capacity re-estimation, demand measurement, allocation decisions |
-| **Slow** | ~5 min | History compaction, per-network learning, telemetry rollup |
+| **Slow** | ~5 min | History compaction, per-network learning, registry persistence |
+| **Telemetry** | ~60 s | Decision/event/sample flush to sqlite |
 
 Splitting them matters: failover must be fast, but re-deciding allocation every
 second would flap ([ADR-006](adr/ADR-006-backup-liveness-budget.md) and the
 hysteresis machine in `allocator/`), and learning is expensive enough that it must
 not sit in the hot path.
+
+Telemetry flushing runs on its own scheduler entry in `Daemon.tick()`,
+independent of the three loops above — none of their cadences match the
+documented `Telemetry.flush_interval_s` (60 s), so tying the flush to any one
+of them either flushed 5x slower than documented (the old slow-loop cadence)
+or wastefully often (fast/medium). See docs/backlog/traffic-blockers.md item 12.
 
 All three loops run from `Daemon.tick()`, called sequentially on one thread —
 medium before fast, because the medium loop is what produces a fresh
