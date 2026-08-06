@@ -324,7 +324,7 @@ class Daemon:
             extra={
                 "workflow": "diagnostics_snapshot",
                 "state": "completed",
-                "intent": "give field debugging a full picture without a live session on the device",
+                "intent": "give field debugging a full picture without a live session",
                 "ap_running": ap_status.running,
                 "ap_channel": ap_status.channel,
                 "ap_ssids": ap_status.ssids,
