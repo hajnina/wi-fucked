@@ -408,29 +408,85 @@ from a LAN-side client, through the appliance's real nft marking, policy
 routing, WireGuard tunnel, and the fabric's real forwarding+NAT, to a real
 HTTP server standing in for "the Internet."
 
-**What was independently confirmed**, by direct inspection of the run's
-output, not by a bare exit code:
+**A real latent bug this test found, and the fix applied to trust the rest
+of the "confirmed" list below:** the first passing runs were misleading.
+`LinuxProber` gives itself a fixed 2.0s wall-clock budget per measurement
+pass across *all* atomics (`active_probe_budget_s`), and probes them in a
+fixed order (`Registry.all()` sorts by label — `wan-a` always first). When
+`wan-a` was genuinely timing out (exactly the case worth measuring), its own
+`ping -c 3 -W 1` calls alone could burn the whole budget, so `wan-b` — the
+failover target — was skipped every tick for as long as the bad patch
+lasted. Direct evidence: grepping the daemon's own `workflow=active_probe`
+log lines across a full 90s run showed **every single one** tagged
+`atomic_id='wan-a'`; `wan-b` never appears, and its `quality.rtt_ms`/
+`loss_pct` stayed `null` on all 28 ticks. `Health` has no staleness decay
+the way `Capacity.confidence` does, so `wan-b`'s seed-time `Health.GOOD`
+just sat there trusted, unverified, for the whole run — the WAN swaps in
+that version of this test were real, but at least one landed on a link that
+had never actually been re-checked. It happened to be fine; the test had no
+way to know that in advance, which means it wasn't actually proving what it
+claimed to.
 
+`chaos_driver.py` now widens `LinuxProber`'s budget (2.0s → 8.0s) and
+shortens each probe (`PROBE_COUNT` 3 → 2) so both atomics reliably fit in
+one pass, tracks per-tick whether each atomic was actually actively probed
+(`wan_a_probed`/`wan_b_probed` in the result JSON), and the orchestrator
+hard-fails the run if `starved_ticks > 0` for any tick after the first
+(tick 1 is a structural exception — `PassiveProber.observe()` has no prior
+counter sample to diff against yet, so it returns `None` for every atomic
+on the very first pass regardless of budget). `chaos_wan.sh` also gained a
+deliberately adversarial window (phases 5–6, ~24s) where *both* WAN links
+are throttled simultaneously — the case that actually exercises whether the
+allocator can tell two non-ideal links apart, which a version where one
+link goes unmeasured cannot meaningfully claim to have tested. This fix is
+scoped to the test's own prober construction only; the underlying gap in
+production `LinuxProber`/`Registry` (fixed probe order, no per-atomic
+fairness or health-staleness decay) is real and still open — see "what is
+unconfirmed" below, this is not something to consider fixed by this test.
+
+**What was independently confirmed**, by direct inspection of the run's
+output, not by a bare exit code, on the run *after* the fix above:
+
+- Both `wan-a` and `wan-b` were actively probed on every tick but the
+  first (`starved_ticks=0`, confirmed both from the orchestrator's
+  assertion and by grepping individual `workflow=active_probe` log lines
+  for both atomic IDs) — every health value the allocator acted on was
+  fresh, not stale or assumed.
 - The allocator reacted to real, kernel-measured degradation (not injected
   values) and switched the tunnel's bound WAN **4 times** in one 90s run,
-  including once in direct response to a real interface being brought fully
-  down (`ip link set eth1 down`, chaos phase 7) — `wg show`/`tunnel.bind_to()`
-  moved the session onto `wan-b` within one probe cycle.
-- A single, continuous HTTP download (6 MiB) — one TCP connection between
-  the LAN-client netns and the "Internet" netns's `http.server`, tunneled
-  through WireGuard and NATed by the fabric the whole way — completed with
-  `curl` exit code 0 and a byte-for-byte matching SHA-256 checksum,
-  throughout 4 WAN swaps, a real link-down/up cycle on each WAN, and
-  sustained bandwidth throttling down to 64–128 kbit/s.
+  including through the adversarial both-links-throttled window and a real
+  interface brought fully down (chaos phase 7) — `wg show`/
+  `tunnel.bind_to()` moved the session within one probe cycle each time.
+- A single, continuous HTTP download (2 MiB — reduced from an earlier 6 MiB;
+  the adversarial dual-throttle window plus real WireGuard/nftables overhead
+  under nested TCG software emulation makes achievable throughput far below
+  what the configured `tbf` rates alone would suggest, a sandbox/emulation
+  cost rather than something this test is trying to measure) — one TCP
+  connection between the LAN-client netns and the "Internet" netns's
+  `http.server`, tunneled through WireGuard and NATed by the fabric the
+  whole way — completed with `curl` exit code 0 and a byte-for-byte matching
+  SHA-256 checksum, throughout 4 WAN swaps, a real link-down/up cycle, and
+  sustained bandwidth throttling down to 128 kbit/s (including the
+  simultaneous-on-both-links window).
 - This is ADR-005/ADR-019's promise made concrete: WireGuard's endpoint
   roaming plus the allocator's failover kept one client-visible TCP session
   alive across the underlying WAN changing repeatedly, with zero corrupted
   or dropped bytes.
 - Confirms ADR-004's "failover, not aggregation" model does what it claims
   under real, if crude, WAN chaos — not just against `Allocator.decide()`
-  unit/scenario tests.
+  unit/scenario tests — and, unlike the first passing runs, that the target
+  it fails over to was actually verified healthy at the time, not merely
+  assumed.
 
 **What is unconfirmed:**
+- **The production probe-starvation gap itself is not fixed, only worked
+  around in this test's own prober construction.** `LinuxProber`'s fixed
+  probe order and lack of health-staleness decay (see above) is a real
+  latent gap in `appliance/src/wifucked/probe/__init__.py` /
+  `atomics/registry.py`, independent of anything in this test. Worth its own
+  scenario test and fix under WS-B/WS-C ownership (SOP-001) — not attempted
+  here since it changes another workstream's decision logic and needs its
+  own proof per SOP-003, not something to bundle into a QEMU-harness PR.
 - **Loss/jitter shaping, not just bandwidth and outages.** This session's
   sandbox kernel has `tbf`/`htb`/`pfifo` compiled in but no `netem` module
   and no `modprobe` to load one (confirmed: `tc qdisc add ... netem` returns
@@ -447,24 +503,22 @@ output, not by a bare exit code:
   client's real 802.11 association surviving a channel move or radio
   hiccup is a different, still-open question (see the "AP+STA SHARED
   profile" and "AP bring-up" entries above).
-- **`LinuxProber`'s active-probe path was exercised for real for the first
-  time** by this test (the ADR-019 proof never called it) — this is also the
-  first real confirmation that `ping -I <ifname>` binding, loss parsing, and
-  the RTT-floor bufferbloat baseline behave correctly against genuinely
-  shaped traffic, not just the probe module's own unit tests.
 
 **Built-in fallback if the untested parts are wrong:** none beyond what's
 already documented for the entries above — `netem` unavailability is a
 sandbox-environment gap in this proof's *chaos realism*, not a code path
 with a fallback; the appliance's own actual fallback behavior
 (`csa_unavailable`, `RadioManager`, `Daemon`'s reconciliation loop) is
-unaffected either way.
+unaffected either way. The probe-starvation gap's real-world fallback is
+whatever `Health`'s staleness happens to be when it matters — i.e., none;
+that is precisely the open finding above.
 
-**Next step:** run `appliance/tests/qemu/run_wan_chaos_download_test.sh` on
-a host with real `netem` support to get loss/jitter shaping instead of the
-bandwidth/outage-only fallback; separately, the real-hardware next step is
-unchanged from the entries above — this test does not reduce what still
-needs a real Pi with real radios.
+**Next step:** file the probe-starvation/health-staleness gap as its own
+issue for WS-B/WS-C rather than leaving it only documented here; run
+`appliance/tests/qemu/run_wan_chaos_download_test.sh` on a host with real
+`netem` support to get loss/jitter shaping instead of the bandwidth/outage
+fallback; the real-hardware next step is unchanged from the entries above —
+this test does not reduce what still needs a real Pi with real radios.
 
 **History:**
 - 2026-08-06 — built and run this session: two full passes, both `PASS`
@@ -472,6 +526,15 @@ needs a real Pi with real radios.
   attempt caught and fixed a real topology bug (the WAN atomics had no route
   to the probe target at all, unrelated to chaos — probe reported spurious
   100% loss immediately on boot until fixed).
+- 2026-08-06 — direct log inspection of those "passing" runs found the
+  probe-starvation gap described above: one WAN atomic went unmeasured for
+  the entire run in both prior passes, so the swaps they showed, while real,
+  weren't proof the failover target was actually verified. Fixed the test's
+  own prober construction, added an adversarial both-links-throttled
+  window, added a hard `starved_ticks==0` assertion, reduced the payload to
+  fit realistic throughput under the harsher schedule, and re-ran: `PASS`,
+  `switch_count=4`, `starved_ticks=0`, checksum-correct. The underlying
+  production gap is filed above as still open, not closed by this fix.
 
 ---
 

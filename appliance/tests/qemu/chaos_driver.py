@@ -52,6 +52,22 @@ DURATION_S = float(os.environ.get("WIFUCKED_CHAOS_DURATION_S", "90"))
 # same technique driver.py uses for FABRIC_URL's version floor.
 probe_mod.PROBE_TARGETS = ("198.51.100.2",)
 
+# LinuxProber's default active-probe budget (2.0s total per pass, PROBE_COUNT=3
+# pings at -W 1 each — up to ~3s if every packet times out) was found by this
+# test to starve: atomics are probed in a fixed order (Registry.all() sorts by
+# label), so whenever the first one is timing out — exactly the case we care
+# about — it alone can burn the entire pass budget and the second atomic gets
+# skipped, every tick, for as long as the bad patch lasts. `Health` has no
+# staleness decay the way `Capacity.confidence` does, so a starved atomic's
+# last-known health just sits there trusted, unverified, indefinitely. That's
+# a real gap in the production probe/allocator interaction (worth its own
+# fix — see docs/active-tests.md), not something this test should paper over.
+# Until that's fixed upstream, this driver widens the budget and shortens each
+# individual probe so two atomics reliably both fit inside one pass, and
+# reports explicitly (see `_probed` below) whenever one doesn't — so a
+# regression here is loud, not silently absorbed into a lucky PASS.
+probe_mod.PROBE_COUNT = 2
+
 
 def log(msg: str) -> None:
     print(f"wifucked-chaos-test: {msg}", flush=True)
@@ -83,7 +99,7 @@ def main() -> int:
 
     telemetry = Telemetry(clock, db_path=None)
     registry = Registry(clock, state_path=None)
-    prober = LinuxProber(hal, clock)
+    prober = LinuxProber(hal, clock, active_probe_budget_s=8.0, active_probe_timeout_s=3.0)
     allocator = Allocator(clock, telemetry)
     enforcer = LinuxEnforcer(dry_run=False, lan_mode="single", base_interface="eth0")
     tunnel = WireGuardTunnel(fabric_min="0.0.0", interface="wg0")
@@ -137,20 +153,37 @@ def main() -> int:
 
     started = clock.now()
     tick = 0
+    starved_ticks = 0
     while clock.now() - started < DURATION_S:
         tick += 1
         now_rel = round(clock.now() - started, 1)
 
         prober.begin_pass(clock.now())
+        actively_probed: set[str] = set()
         for atomic in registry.present():
             observation = prober.observe(atomic)
             if observation is None:
                 continue
+            if observation.rtt_ms is not None or observation.loss_pct is not None:
+                actively_probed.add(atomic.id)
             registry.update_capacity(atomic.id, fold(atomic.capacity, observation, clock.now()))
             updated = registry.get(atomic.id)
             if updated is not None:
                 updated.quality = quality_of(observation)
                 registry.update_health(atomic.id, _health_of(observation))
+
+        starved = [a for a in (wan_a.id, wan_b.id) if a not in actively_probed]
+        # Tick 1 is a structural exception, not starvation: PassiveProber.observe()
+        # has no prior counter sample to diff against yet, so it returns None for
+        # every atomic on the very first pass regardless of budget — see its
+        # source. Only tick >= 2 onward is a real "did the budget cover both
+        # atomics" question.
+        if starved and tick > 1:
+            starved_ticks += 1
+            log(
+                f"WARNING tick={tick} probe budget starved these present atomics "
+                f"this pass, health not re-verified: {starved}"
+            )
 
         atomics = registry.all()
         allocation = allocator.decide(atomics, demand)
@@ -176,9 +209,11 @@ def main() -> int:
             "wan_a_health": by_id["wan-a"].health.value if "wan-a" in by_id else None,
             "wan_a_rtt_ms": by_id["wan-a"].quality.rtt_ms if "wan-a" in by_id else None,
             "wan_a_loss_pct": by_id["wan-a"].quality.loss_pct if "wan-a" in by_id else None,
+            "wan_a_probed": "wan-a" in actively_probed,
             "wan_b_health": by_id["wan-b"].health.value if "wan-b" in by_id else None,
             "wan_b_rtt_ms": by_id["wan-b"].quality.rtt_ms if "wan-b" in by_id else None,
             "wan_b_loss_pct": by_id["wan-b"].quality.loss_pct if "wan-b" in by_id else None,
+            "wan_b_probed": "wan-b" in actively_probed,
         }
         result["ticks"].append(snapshot)
         log(f"tick={tick} {json.dumps(snapshot)}")
@@ -188,6 +223,8 @@ def main() -> int:
             time.sleep(remaining)
 
     result["switch_count"] = len(result["primary_switches"]) - 1
+    result["starved_ticks"] = starved_ticks
+    result["total_ticks"] = tick
     _write(result)
     return 0
 

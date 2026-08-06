@@ -76,9 +76,17 @@ apply_down() {
 }
 
 # One phase step: 12s. wan-a and wan-b run independent cycles, offset so
-# their bad windows mostly (not always) miss each other.
-CYCLE_A=(good good throttled wrecked good throttled good down good good throttled good)
-CYCLE_B=(throttled good good good wrecked good down good throttled good good good)
+# their bad windows mostly (not always) miss each other — plus two
+# deliberately adversarial phases (index 5-6) where *both* are throttled at
+# the same time. That's the case that actually exercises whether the
+# allocator can tell the two apart when neither is simply "good": before the
+# probe-budget fix (docs/active-tests.md), the second-probed atomic could go
+# an entire bad patch without being re-measured at all, so a window where
+# both links are simultaneously non-ideal is exactly where a stale, unverified
+# health value would have gone unnoticed. Never both fully down at once,
+# still — that tests raw TCP timeout tolerance, not this appliance's failover.
+CYCLE_A=(good good throttled wrecked good throttled throttled down good good throttled good)
+CYCLE_B=(throttled good good good wrecked throttled throttled good throttled good good good)
 STEP_S=12
 N=${#CYCLE_A[@]}
 

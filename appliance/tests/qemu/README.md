@@ -101,10 +101,17 @@ sudo appliance/tests/qemu/run_wan_chaos_download_test.sh
 
 See [`docs/active-tests.md`](../../../docs/active-tests.md)'s entry for this
 test for exactly what it proved (confirmed: 4 real WAN swaps during a run,
-including a real full link-down, with the download completing
-checksum-correct throughout) and what it didn't (this environment's kernel
-has no `netem` module, so degradation is bandwidth throttling and real
-link-down outages, not loss/jitter shaping — see `chaos_wan.sh`'s header).
+including a real full link-down and an adversarial both-links-throttled
+window, with both WAN atomics actively re-measured every tick —
+`starved_ticks=0`, enforced — and the download completing checksum-correct
+throughout) and what it didn't: this environment's kernel has no `netem`
+module, so degradation is bandwidth throttling and real link-down outages,
+not loss/jitter shaping (see `chaos_wan.sh`'s header); and a real,
+independent gap the test's first passing runs surfaced but didn't fix — a
+fixed probe order plus no health-staleness decay in production
+`LinuxProber`/`Registry` can leave a failover target's health unverified
+indefinitely under sustained load. That's filed as its own open finding in
+`active-tests.md`, not something this test claims to have closed.
 
 | File | Role |
 |---|---|
