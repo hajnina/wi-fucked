@@ -104,6 +104,7 @@ class DesiredState:
 class Enforcer(Protocol):
     def reconcile(self, desired: DesiredState) -> None: ...
     def actual(self) -> DesiredState | None: ...
+    def raw_dump(self) -> dict[str, str]: ...
 
 
 #: Default tunnel interface name, matching `tunnel.WireGuardTunnel`'s default.
@@ -229,6 +230,10 @@ class MockEnforcer(Enforcer):
             if s.ifname == ifname
         )
 
+    def raw_dump(self) -> dict[str, str]:
+        """No real kernel to read under MOCK_HW; nothing to dump."""
+        return {}
+
 
 class LinuxEnforcer(Enforcer):
     """Programs tc/CAKE, nftables and policy routing.
@@ -296,6 +301,42 @@ class LinuxEnforcer(Enforcer):
         if self._dry_run:
             return self._actual
         return self._read_actual()
+
+    def raw_dump(self) -> dict[str, str]:
+        """Human-readable kernel state, for the diagnostics bundle and the
+        periodic debug snapshot (``daemon._slow_loop``) — never for parsing.
+
+        Read-only, same as everything else in this module (ADR-007); nothing
+        here installs or removes state. Failures degrade to an empty string
+        per command rather than raising, so one missing tool never blanks the
+        rest of the dump.
+        """
+        return {
+            "nft_ruleset": self._exec(
+                ["nft", "list", "ruleset"],
+                workflow="diagnostics_dump",
+                intent="capture nftables marking state for support",
+            )
+            or "",
+            "tc_qdisc": self._exec(
+                ["tc", "-s", "qdisc", "show"],
+                workflow="diagnostics_dump",
+                intent="capture CAKE shaping and drop/backlog stats for support",
+            )
+            or "",
+            "ip_rule": self._exec(
+                ["ip", "rule", "show"],
+                workflow="diagnostics_dump",
+                intent="capture policy routing state for support",
+            )
+            or "",
+            "ip_route": self._exec(
+                ["ip", "route", "show", "table", "all"],
+                workflow="diagnostics_dump",
+                intent="capture per-atomic routing tables for support",
+            )
+            or "",
+        }
 
     # -- convergence ----------------------------------------------------------
 

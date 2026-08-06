@@ -396,3 +396,40 @@ def test_close_tolerates_cake_rounding_but_not_real_change():
     assert _close(100_000_000, 100_000_000)
     assert _close(100_000_000, 101_000_000)  # 1% — CAKE rendering noise
     assert not _close(100_000_000, 150_000_000)  # 50% — a real capacity change
+
+
+# -- raw_dump (diagnostics) ---------------------------------------------------
+
+
+def test_raw_dump_returns_output_of_each_readonly_command():
+    outputs = {
+        "nft": _completed(stdout="table inet wifucked { }\n"),
+        "tc": _completed(stdout="qdisc cake 8001: dev wlan0 root\n"),
+        "ip": _completed(stdout="0: from all lookup local\n"),
+    }
+
+    def fake(argv, **_kwargs):
+        return outputs[argv[0]]
+
+    with patch("wifucked.enforce.subprocess.run", side_effect=fake):
+        dump = LinuxEnforcer().raw_dump()
+
+    assert dump["nft_ruleset"] == "table inet wifucked { }\n"
+    assert dump["tc_qdisc"] == "qdisc cake 8001: dev wlan0 root\n"
+    assert dump["ip_rule"] == "0: from all lookup local\n"
+    assert dump["ip_route"] == "0: from all lookup local\n"
+
+
+def test_raw_dump_degrades_to_empty_string_per_command_on_failure():
+    """One missing tool must not blank the rest of the dump (SOP-009)."""
+
+    def fake(argv, **_kwargs):
+        if argv[0] == "nft":
+            raise FileNotFoundError("nft not found")
+        return _completed(stdout="ok\n")
+
+    with patch("wifucked.enforce.subprocess.run", side_effect=fake):
+        dump = LinuxEnforcer().raw_dump()
+
+    assert dump["nft_ruleset"] == ""
+    assert dump["tc_qdisc"] == "ok\n"

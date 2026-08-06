@@ -107,6 +107,13 @@ class TestHostapdConfig:
         identity = derive_identity(SERIAL, LanConfig())
         assert "channel=11" in hostapd_config(identity, 11, "two_bss")
 
+    def test_ctrl_interface_is_always_set(self):
+        """Without it, every hostapd_cli call fails with wpa_ctrl_open ENOENT
+        and ApStatus.associated_clients can never be real."""
+        identity = derive_identity(SERIAL, LanConfig())
+        for mode in ("single", "two_bss", "two_psk"):
+            assert "ctrl_interface=/var/run/hostapd" in hostapd_config(identity, 6, mode)
+
     def test_open_network_drops_wpa_entirely(self):
         """ADR-021: first boot on headless hardware has no other way in."""
         identity = derive_identity(SERIAL, LanConfig())
