@@ -74,7 +74,7 @@ workarounds that may no longer be necessary there:
 | File | Role |
 |---|---|
 | `download_kernel.sh` | Fetches the Alpine kernel + module set (cached) |
-| `build_initramfs.sh` | Builds the appliance guest's initramfs |
+| `build_initramfs.sh` | Builds the appliance guest's initramfs (also the base build the WAN-chaos test's `build_chaos_initramfs.sh` reuses) |
 | `build_fabric_initramfs.sh` | Builds the fabric guest's initramfs |
 | `guest_init.sh` | Appliance guest's `/init` (PID 1) |
 | `fabric_guest_init.sh` | Fabric guest's `/init` (PID 1) |
@@ -84,3 +84,40 @@ workarounds that may no longer be necessary there:
 | `vlan_ping.py` | Hand-crafted VLAN-tagged ICMP injector (host side) |
 | `module_closure.txt` | Dependency-ordered kernel module list |
 | `run_packet_routing_test.sh` | Orchestrates all of the above |
+
+## WAN-chaos download proof
+
+A second, complementary test lives alongside this one: instead of one
+injected packet, it runs the real **control loop** (`Allocator`,
+`LinuxProber`, `WireGuardTunnel`, `LinuxEnforcer` — the same objects
+`wifucked.daemon.Daemon.tick()` drives) continuously while two real WAN
+links are actively degraded, and proves a real HTTP download survives it —
+checksum-correct, one continuous TCP connection, through multiple real
+WAN failovers.
+
+```bash
+sudo appliance/tests/qemu/run_wan_chaos_download_test.sh
+```
+
+See [`docs/active-tests.md`](../../../docs/active-tests.md)'s entry for this
+test for exactly what it proved (confirmed: 4 real WAN swaps during a run,
+including a real full link-down and an adversarial both-links-throttled
+window, with both WAN atomics actively re-measured every tick —
+`starved_ticks=0`, enforced — and the download completing checksum-correct
+throughout) and what it didn't: this environment's kernel has no `netem`
+module, so degradation is bandwidth throttling and real link-down outages,
+not loss/jitter shaping (see `chaos_wan.sh`'s header); and a real,
+independent gap the test's first passing runs surfaced but didn't fix — a
+fixed probe order plus no health-staleness decay in production
+`LinuxProber`/`Registry` can leave a failover target's health unverified
+indefinitely under sustained load. That's filed as its own open finding in
+`active-tests.md`, not something this test claims to have closed.
+
+| File | Role |
+|---|---|
+| `build_chaos_initramfs.sh` | Builds the appliance guest's initramfs, reusing `build_initramfs.sh` with a different `/init` and driver |
+| `chaos_guest_init.sh` | Appliance guest's `/init` — flat, ADR-020 "single"-mode LAN instead of VLAN, so a real IP client can do a real TCP download |
+| `chaos_driver.py` | Runs inside the appliance guest; loops the real control-loop steps for the whole test |
+| `chaos_topology.sh` | Host-side namespaces/bridges/taps, LAN side addressed instead of hand-crafted VLAN |
+| `chaos_wan.sh` | Degrades the two WAN taps on an independent, time-varying schedule (`tc netem` if available, `tbf`+link down/up otherwise) |
+| `run_wan_chaos_download_test.sh` | Orchestrates all of the above, including the LAN-side `curl` download and checksum verification |
