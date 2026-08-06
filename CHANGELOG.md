@@ -1,3 +1,13 @@
+## v1.3.2 — 2026-08-06
+
+### fix
+- default to one plain hotspot and USB-only WAN, not two unverified SSIDs (#41)
+
+### docs
+- reflect item 12's dedicated telemetry cadence (#40)
+- changelog for v1.3.1 [skip ci]
+
+
 ## v1.3.1 — 2026-08-05
 
 ### fix
