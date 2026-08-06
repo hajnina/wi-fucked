@@ -31,6 +31,27 @@ journalctl -u wifucked -n 500 --no-pager
 journalctl -u wifucked -n 500 -o json | jq 'select(.WORKFLOW=="backup_activation")'
 ```
 
+The slow loop (`daemon._log_diagnostics_snapshot`, ~5 min cadence) logs a
+`diagnostics_snapshot` DEBUG entry every pass: AP status and associated-client
+count, every WAN atomic's kind/mode/health, and the raw `nft list ruleset` /
+`tc -s qdisc show` / `ip rule show` / `ip route show table all` text —
+`enforce/`'s own readback, not a second shell-out (`enforce` is the only
+module permitted to invoke `tc`/`nft`/`ip`). DEBUG is off by default
+(`WIFUCKED_DEBUG` gates the root logger level in `logging.py`); set it in the
+unit's environment (`systemctl edit wifucked.service`, add
+`Environment=WIFUCKED_DEBUG=1`) before you need it, since it can't retroactively
+recover a window you didn't capture:
+
+```bash
+journalctl -u wifucked -n 500 -o json | jq 'select(.WORKFLOW=="diagnostics_snapshot")'
+```
+
+The same fields, structured, also come back from
+`curl -s localhost:8080/api/diagnostics/bundle` as `radio_state.json`,
+`nft_ruleset.txt`, `tc_qdisc.txt`, `ip_rule.txt`, and `ip_route.txt` — useful
+when the dashboard is reachable but you want one file to attach rather than a
+log query.
+
 `journalctl` is RAM-only on this image (`Storage=volatile` in `setup_rpi.sh`, to
 protect the SD card) — it is lost the moment the device is power-cycled, which is
 often exactly when you'd want it, and it says nothing about a boot early enough

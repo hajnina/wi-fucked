@@ -164,6 +164,8 @@ def create_app(daemon: Daemon, api_token: str = "") -> Flask:
         an issue. Keep it that way when extending it.
         """
         done = _timed("diagnostics_bundle")
+        ap_status = daemon.hal.ap.status()
+        kernel = daemon.enforcer.raw_dump()
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
             for name, blob in (
@@ -176,6 +178,35 @@ def create_app(daemon: Daemon, api_token: str = "") -> Flask:
                     ),
                 ),
                 ("release", json.dumps(daemon.release, indent=2)),
+                (
+                    "radio_state.json",
+                    json.dumps(
+                        {
+                            "ap_running": ap_status.running,
+                            "ap_channel": ap_status.channel,
+                            "ap_ssids": list(ap_status.ssids),
+                            "ap_associated_clients": ap_status.associated_clients,
+                            "wan_atomics": [
+                                {
+                                    "id": a.id,
+                                    "kind": str(a.kind),
+                                    "mode": str(a.mode),
+                                    "health": str(a.health),
+                                }
+                                for a in daemon.registry.present()
+                            ],
+                        },
+                        indent=2,
+                    ),
+                ),
+                # Kernel state (ADR-007: read-only, never mutating). Only
+                # `enforce/` is permitted to invoke `tc`/`nft`/`ip`
+                # (enforce/__init__.py) — this reuses that module's own
+                # readback rather than shelling out here.
+                ("nft_ruleset.txt", kernel.get("nft_ruleset", "")),
+                ("tc_qdisc.txt", kernel.get("tc_qdisc", "")),
+                ("ip_rule.txt", kernel.get("ip_rule", "")),
+                ("ip_route.txt", kernel.get("ip_route", "")),
             ):
                 data = blob.encode()
                 info = tarfile.TarInfo(name)

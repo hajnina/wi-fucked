@@ -300,6 +300,51 @@ class Daemon:
                 },
             )
 
+        self._log_diagnostics_snapshot()
+
+    def _log_diagnostics_snapshot(self) -> None:
+        """Periodic DEBUG-level system snapshot for field debugging.
+
+        Runs on the slow loop (~5 min): this is read-only diagnostic exhaust,
+        not a decision input, so it does not need a cadence of its own the way
+        telemetry does. Everything here is either already computed elsewhere
+        (the registry) or explicitly read-only (``enforcer.raw_dump()``,
+        ``hal.ap.status()``) — nothing in this method installs or removes
+        kernel state (ADR-007, ADR-008). Feeds `journalctl -u wifucked`
+        directly and the `/api/diagnostics/bundle` support bundle (SOP-009);
+        it does not scan the radio itself, so it never adds an off-channel
+        scan beyond what `Discoverer` already throttles (ADR-011).
+        """
+        ap_status = self.hal.ap.status()
+        atomics = self.registry.present()
+        kernel = self.enforcer.raw_dump()
+
+        log.debug(
+            "Periodic diagnostics snapshot",
+            extra={
+                "workflow": "diagnostics_snapshot",
+                "state": "completed",
+                "intent": "give field debugging a full picture without a live session on the device",
+                "ap_running": ap_status.running,
+                "ap_channel": ap_status.channel,
+                "ap_ssids": ap_status.ssids,
+                "ap_associated_clients": ap_status.associated_clients,
+                "wan_atomics": [
+                    {
+                        "id": a.id,
+                        "kind": str(a.kind),
+                        "mode": str(a.mode),
+                        "health": str(a.health),
+                    }
+                    for a in atomics
+                ],
+                "nft_ruleset": kernel.get("nft_ruleset", ""),
+                "tc_qdisc": kernel.get("tc_qdisc", ""),
+                "ip_rule": kernel.get("ip_rule", ""),
+                "ip_route": kernel.get("ip_route", ""),
+            },
+        )
+
     # -- steps ----------------------------------------------------------------
 
     def discover_once(self) -> None:

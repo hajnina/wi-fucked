@@ -564,6 +564,23 @@ class TestApi:
         for marker in (b"passphrase", b"private key", b"psk", b"password"):
             assert marker not in blob
 
+    def test_diagnostics_bundle_carries_kernel_and_radio_state(self, client):
+        """SOP-009 promises kernel/radio state in the bundle; keep the code true to it."""
+        import io
+        import tarfile
+
+        response = client.get("/api/diagnostics/bundle")
+        with tarfile.open(fileobj=io.BytesIO(response.data), mode="r:gz") as archive:
+            names = set(archive.getnames())
+
+        assert {
+            "radio_state.json",
+            "nft_ruleset.txt",
+            "tc_qdisc.txt",
+            "ip_rule.txt",
+            "ip_route.txt",
+        } <= names
+
 
 class TestApiAuth:
     """WANs are hostile (architecture.md); the dashboard/API must not be

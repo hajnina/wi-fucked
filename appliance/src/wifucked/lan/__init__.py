@@ -92,6 +92,12 @@ def hostapd_config(
     passphrase — still generated, still on the label — has to be applied by
     hand afterwards. The two-class modes are unverified and not what ships
     today, so they are left requiring their PSK regardless of this flag.
+
+    ``ctrl_interface`` is set unconditionally so ``hostapd_cli`` (station
+    list, channel switch, and the diagnostics snapshot in ``daemon.py``) has
+    a control socket to talk to; without it every ``hostapd_cli`` call fails
+    with ``wpa_ctrl_open: No such file or directory`` and ``ApStatus`` can
+    never report real associated clients.
     """
     base = f"""# Generated at first boot. SSID and BSSID are immutable (ADR-012).
 interface={interface}
@@ -102,6 +108,7 @@ channel={channel}
 ieee80211n=1
 wmm_enabled=1
 auth_algs=1
+ctrl_interface=/var/run/hostapd
 """
 
     if mode == "single":
