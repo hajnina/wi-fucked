@@ -70,7 +70,7 @@ identity = derive_identity(serial, config)
 profiles = profiles_for_lan_mode(lan_mode)
 
 Path("/etc/hostapd/hostapd.conf").write_text(
-    hostapd_config(identity, channel, lan_mode)
+    hostapd_config(identity, channel, lan_mode, open_network=config.open_on_first_boot)
 )
 if lan_mode == "two_psk":
     psk = Path("/etc/hostapd/wpa_psk")
@@ -95,7 +95,25 @@ for profile in profiles:
 # The label card. Printed on the device, and the only way a user learns the
 # passphrase — so it is written where support can also read it back.
 if lan_mode == "single":
-    label = f"""WI-FUCKED -> BALANCED
+    if config.open_on_first_boot:
+        label = f"""WI-FUCKED -> BALANCED
+
+  {identity.ssid}
+      open network — no password, connect and go (ADR-021)
+
+  dashboard: http://wifucked.local  or  http://10.44.0.1
+
+To secure this network, set the passphrase below in /etc/hostapd/hostapd.conf
+and restart hostapd. It never changes once set, so every device stays joined:
+
+      passphrase: {identity.passphrase}
+
+Factory reset: power-cycle three times within 60 seconds of boot.
+This resets your Internet connections only. Your network and password
+never change.
+"""
+    else:
+        label = f"""WI-FUCKED -> BALANCED
 
   {identity.ssid}
       password: {identity.passphrase}

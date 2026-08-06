@@ -31,7 +31,13 @@ more than it looks: a setup-then-rename flow means every device in the house has
 be re-joined the moment configuration finishes, which is exactly the experience the
 product exists to avoid.
 
-The default passphrase is derived from the Pi's serial and printed on the label.
+> **Currently shipping (interim, [ADR-021](adr/ADR-021-open-network-on-first-boot.md)):**
+> the hotspot is **open, no password**, on first boot. Bare hardware has no
+> screen, no button, and no printed label to read a passphrase off before
+> joining, so there is no other channel in. A passphrase is still derived from
+> the Pi's serial and written to the label for later use, but nothing applies
+> it automatically — securing the network is a manual step the user takes
+> after connecting.
 
 Joining `Stable_besteffort` with no WAN configured raises a captive portal.
 

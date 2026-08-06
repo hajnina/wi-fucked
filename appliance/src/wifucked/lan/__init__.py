@@ -70,7 +70,13 @@ def _passphrase(seed: str, salt: str) -> str:
     return "".join(alphabet[b % len(alphabet)] for b in digest[:16])
 
 
-def hostapd_config(identity: LanIdentity, channel: int, mode: str, interface: str = "wlan0") -> str:
+def hostapd_config(
+    identity: LanIdentity,
+    channel: int,
+    mode: str,
+    interface: str = "wlan0",
+    open_network: bool = False,
+) -> str:
     """Render hostapd.conf for the single-SSID, two-BSS, or two-PSK layout.
 
     "single" (ADR-020, the current default) is one plain BSS with one
@@ -79,6 +85,13 @@ def hostapd_config(identity: LanIdentity, channel: int, mode: str, interface: st
     driver behaviour (ADR-013, ADR-014; see docs/radio-spike.md). Everything
     above the LAN layer sees VLANs (or, in "single" mode, none), so the choice
     does not leak upwards.
+
+    ``open_network`` (ADR-021) drops WPA entirely and is only meaningful for
+    "single": there is no headless way to learn the derived passphrase before
+    first joining, so first boot ships unauthenticated and the derived
+    passphrase — still generated, still on the label — has to be applied by
+    hand afterwards. The two-class modes are unverified and not what ships
+    today, so they are left requiring their PSK regardless of this flag.
     """
     base = f"""# Generated at first boot. SSID and BSSID are immutable (ADR-012).
 interface={interface}
@@ -89,15 +102,22 @@ channel={channel}
 ieee80211n=1
 wmm_enabled=1
 auth_algs=1
-wpa=2
-wpa_key_mgmt=WPA-PSK
-rsn_pairwise=CCMP
 """
 
     if mode == "single":
+        if open_network:
+            return (
+                base
+                + f"""ssid={identity.ssid}
+bssid={identity.bssid}
+"""
+            )
         return (
             base
-            + f"""ssid={identity.ssid}
+            + f"""wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+ssid={identity.ssid}
 bssid={identity.bssid}
 wpa_passphrase={identity.passphrase}
 """
@@ -106,7 +126,10 @@ wpa_passphrase={identity.passphrase}
     if mode == "two_psk":
         return (
             base
-            + f"""ssid={identity.besteffort_ssid}
+            + f"""wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+ssid={identity.besteffort_ssid}
 bssid={identity.bssid}
 wpa_psk_file=/etc/hostapd/wpa_psk
 vlan_file=/etc/hostapd/hostapd.vlan
@@ -116,7 +139,10 @@ dynamic_vlan=1
 
     return (
         base
-        + f"""ssid={identity.besteffort_ssid}
+        + f"""wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+ssid={identity.besteffort_ssid}
 bssid={identity.bssid}
 wpa_passphrase={identity.passphrase}
 vlan_id={BEST_EFFORT.vlan}
