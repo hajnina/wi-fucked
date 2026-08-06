@@ -1,3 +1,13 @@
+## v1.3.3 — 2026-08-06
+
+### fix
+- give hostapd a control socket; add periodic diagnostics (#43)
+- ship the hotspot open, unauthenticated, on first boot (#42)
+
+### docs
+- changelog for v1.3.2 [skip ci]
+
+
 ## v1.3.2 — 2026-08-06
 
 ### fix
