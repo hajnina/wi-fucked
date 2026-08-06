@@ -40,14 +40,12 @@ if [[ -z "${SERIAL}" ]]; then
     echo "wifucked-firstboot: WARNING no CPU serial; falling back to machine-id"
 fi
 
-# Probe what the radio can actually do and pick the LAN layout accordingly
-# (ADR-014). Two BSS is preferred; one SSID with two PSKs is the sanctioned
-# fallback when the driver refuses.
-LAN_MODE=two_bss
-if ! iw phy 2>/dev/null | grep -qE '#\{ AP \} <= [2-9]'; then
-    LAN_MODE=two_psk
-    echo "wifucked-firstboot: driver reports a single AP interface; using two-PSK layout"
-fi
+# ADR-020 (interim, until the radio spike lands — docs/radio-spike.md): one
+# plain SSID, one passphrase, no VLAN split. No driver probe, because there
+# is nothing here for a probe to get wrong — any nl80211 driver can serve one
+# BSS. The two-class layouts (ADR-013/ADR-014) stay implemented in lan/ for
+# when the spike clears them; this script does not select between them.
+LAN_MODE=single
 
 CHANNEL=6
 
@@ -64,11 +62,12 @@ from wifucked.lan import (
     networkd_unit_name,
     wpa_psk_file,
 )
-from wifucked.policy import DEFAULT_PROFILES
+from wifucked.policy import profiles_for_lan_mode
 
 serial, lan_mode, channel = sys.argv[1], sys.argv[2], int(sys.argv[3])
 config = LanConfig(lan_mode=lan_mode)
 identity = derive_identity(serial, config)
+profiles = profiles_for_lan_mode(lan_mode)
 
 Path("/etc/hostapd/hostapd.conf").write_text(
     hostapd_config(identity, channel, lan_mode)
@@ -78,24 +77,38 @@ if lan_mode == "two_psk":
     psk.write_text(wpa_psk_file(identity))
     psk.chmod(0o600)
 
-Path("/etc/dnsmasq.d/wifucked.conf").write_text(dnsmasq_config(config, DEFAULT_PROFILES))
+Path("/etc/dnsmasq.d/wifucked.conf").write_text(dnsmasq_config(config, profiles))
 
-# Static gateway address for each profile's VLAN subinterface — dnsmasq hands
-# out these addresses as the DHCP gateway, so without this a client gets a
-# lease pointing at nothing. systemd-networkd matches by interface name and
-# applies whenever hostapd brings the subinterface up; no ordering against
-# hostapd is needed (ADR-011).
+# Static gateway address for each profile's VLAN subinterface (or, in
+# "single" mode, the one address for the bare base interface) — dnsmasq
+# hands out these addresses as the DHCP gateway, so without this a client
+# gets a lease pointing at nothing. systemd-networkd matches by interface
+# name and applies whenever hostapd brings the interface up; no ordering
+# against hostapd is needed (ADR-011).
 network_dir = Path("/etc/systemd/network")
 network_dir.mkdir(parents=True, exist_ok=True)
-for profile in DEFAULT_PROFILES:
+for profile in profiles:
     (network_dir / networkd_unit_name(profile)).write_text(
-        networkd_config(config, profile, DEFAULT_PROFILES, lan_mode)
+        networkd_config(config, profile, profiles, lan_mode)
     )
 
 # The label card. Printed on the device, and the only way a user learns the
 # passphrase — so it is written where support can also read it back.
-Path("/var/lib/wifucked/label.txt").write_text(
-    f"""WI-FUCKED -> BALANCED
+if lan_mode == "single":
+    label = f"""WI-FUCKED -> BALANCED
+
+  {identity.ssid}
+      password: {identity.passphrase}
+
+  dashboard: http://wifucked.local  or  http://10.44.0.1
+
+Factory reset: power-cycle three times within 60 seconds of boot.
+This resets your Internet connections only. Your network and password
+never change.
+"""
+    generated_for = identity.ssid
+else:
+    label = f"""WI-FUCKED -> BALANCED
 
   {identity.besteffort_ssid}
       password: {identity.passphrase}
@@ -111,8 +124,10 @@ Factory reset: power-cycle three times within 60 seconds of boot.
 This resets your Internet connections only. Your networks and passwords
 never change.
 """
-)
-print(f"wifucked-firstboot: generated identity for {identity.besteffort_ssid}")
+    generated_for = identity.besteffort_ssid
+
+Path("/var/lib/wifucked/label.txt").write_text(label)
+print(f"wifucked-firstboot: generated identity for {generated_for}")
 PY
 
 chmod 600 /etc/hostapd/hostapd.conf

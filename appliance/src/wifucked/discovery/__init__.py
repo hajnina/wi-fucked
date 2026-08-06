@@ -29,15 +29,24 @@ log = get_logger("discovery")
 DEFAULT_WIFI_SCAN_MIN_INTERVAL_S = 120.0
 
 
-def discover(hal: Hal) -> list[Atomic]:
+def discover(hal: Hal, *, include_wifi_wan: bool = True) -> list[Atomic]:
     """One unthrottled discovery sweep. Never raises: a broken source must not
     stop the rest.
+
+    ``include_wifi_wan`` defaults to on here — this function is the general
+    building block and existing callers (tests, scenarios) expect Wi-Fi WAN
+    atomics. The running daemon is what actually defaults to USB-only WAN
+    (ADR-020: ``Config.lan.wan_uses_wifi`` is ``False`` by default), by
+    passing ``include_wifi_wan=False`` explicitly through `Discoverer` — the
+    onboard radio's only job there is broadcasting the hotspot. Pass
+    ``include_wifi_wan=False`` here too for a synchronous snapshot that
+    matches that default.
 
     Used directly by tests and anywhere that wants a synchronous snapshot. The
     running daemon should go through `Discoverer` instead, which gates the
     Wi-Fi scan to a slower cadence (see module docstring above).
     """
-    return _sweep(hal, wifi=_discover_wifi)
+    return _sweep(hal, wifi=_discover_wifi if include_wifi_wan else None)
 
 
 class Discoverer:
@@ -47,21 +56,26 @@ class Discoverer:
     still runs on every sweep. The Wi-Fi scan is the one that can disturb the
     AP, so it is gated by wall-clock time rather than loop cadence — moving it
     to the slow loop alone would not be enough if the slow loop's own interval
-    ever changes.
+    ever changes. The running daemon constructs this with
+    ``include_wifi_wan=config.lan.wan_uses_wifi``, ``False`` by default
+    (ADR-020) — the radio's only job, by default, is serving the hotspot.
     """
 
     def __init__(
         self,
         clock: Clock,
         wifi_scan_min_interval_s: float = DEFAULT_WIFI_SCAN_MIN_INTERVAL_S,
+        include_wifi_wan: bool = True,
     ):
         self._clock = clock
         self._wifi_scan_min_interval_s = wifi_scan_min_interval_s
+        self._include_wifi_wan = include_wifi_wan
         self._next_wifi_scan = 0.0
         self._last_wifi_atomics: list[Atomic] = []
 
     def discover(self, hal: Hal) -> list[Atomic]:
-        return _sweep(hal, wifi=self._discover_wifi_throttled)
+        wifi = self._discover_wifi_throttled if self._include_wifi_wan else None
+        return _sweep(hal, wifi=wifi)
 
     def _discover_wifi_throttled(self, hal: Hal) -> list[Atomic]:
         now = self._clock.now()
@@ -87,10 +101,10 @@ class Discoverer:
 
 def _sweep(hal: Hal, *, wifi) -> list[Atomic]:
     found: list[Atomic] = []
-    for name, source in (
-        ("wifi", wifi),
-        ("usb", _discover_usb),
-    ):
+    sources = (
+        (("usb", _discover_usb),) if wifi is None else (("wifi", wifi), ("usb", _discover_usb))
+    )
+    for name, source in sources:
         try:
             found.extend(source(hal))
         except Exception as exc:

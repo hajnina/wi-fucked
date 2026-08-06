@@ -29,6 +29,13 @@ unverified for exactly this reason.
 Timeboxed to one week. Deliverable is a written findings document that amends the
 ADRs.
 
+**Interim, until it lands:** the appliance ships
+[ADR-020](adr/ADR-020-interim-single-hotspot.md)'s simplification — one plain
+SSID instead of `Stable_critical`/`Stable_besteffort`, WAN discovery limited to
+USB tethering and USB Ethernet. This exists so "the AP comes up on real
+hardware" (the exit criterion below) does not depend on the very thing the
+spike is verifying.
+
 ### In parallel
 
 - Repo skeleton, `CLAUDE.md`, SOPs, ADRs, docs

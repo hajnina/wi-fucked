@@ -31,7 +31,7 @@ from wifucked.discovery import Discoverer
 from wifucked.enforce import Enforcer, LinuxEnforcer, MockEnforcer, render
 from wifucked.hal import Hal, build_hal
 from wifucked.logging import get_logger
-from wifucked.policy import DEFAULT_PROFILES
+from wifucked.policy import profiles_for_lan_mode
 from wifucked.probe import LinuxProber, Prober, ScriptedProber, fold, quality_of
 from wifucked.radio import RadioManager, RadioState
 from wifucked.telemetry import Telemetry
@@ -64,9 +64,19 @@ class Daemon:
             self.clock, config.telemetry_path if persist else None
         )
         self.registry = Registry(self.clock, config.registry_path if persist else None)
-        self.allocator = Allocator(self.clock, self.telemetry, config.thresholds)
+        #: Which service profiles actually exist for the configured LAN layout
+        #: (ADR-020) — `"single"` (the current default) has no VLAN split, so
+        #: only `BEST_EFFORT` is real. Threaded into every module that
+        #: classifies or accounts LAN traffic, rather than each assuming
+        #: `DEFAULT_PROFILES`.
+        self.profiles = profiles_for_lan_mode(config.lan.lan_mode)
+        self.allocator = Allocator(
+            self.clock, self.telemetry, config.thresholds, profiles=self.profiles
+        )
         self.discoverer = Discoverer(
-            self.clock, wifi_scan_min_interval_s=config.loops.wifi_scan_min_interval_s
+            self.clock,
+            wifi_scan_min_interval_s=config.loops.wifi_scan_min_interval_s,
+            include_wifi_wan=config.lan.wan_uses_wifi,
         )
 
         # Real, hardware-backed implementations when there is real hardware to
@@ -75,7 +85,9 @@ class Daemon:
         # already resolved MOCK_HW into it, so nothing here re-reads the env var.
         real_hw = not self.hal.mocked
         self.enforcer = enforcer or (
-            LinuxEnforcer(lan_mode=config.lan.lan_mode) if real_hw else MockEnforcer()
+            LinuxEnforcer(lan_mode=config.lan.lan_mode, profiles=self.profiles)
+            if real_hw
+            else MockEnforcer()
         )
         self.prober = prober or (
             LinuxProber(
@@ -89,10 +101,10 @@ class Daemon:
         )
         self.demand = demand or (
             CounterDemand(
-                DEFAULT_PROFILES, hal=self.hal, clock=self.clock, lan_mode=config.lan.lan_mode
+                self.profiles, hal=self.hal, clock=self.clock, lan_mode=config.lan.lan_mode
             )
             if real_hw
-            else StaticDemand(DEFAULT_PROFILES)
+            else StaticDemand(self.profiles)
         )
         self.radio = RadioManager(self.hal, self.telemetry)
         fabric_min = self.release.get("WIFUCKED_FABRIC_MIN", "0.0.0")
@@ -245,7 +257,12 @@ class Daemon:
         if self.allocation is not None:
             by_id = {a.id: a for a in atomics}
             self.enforcer.reconcile(
-                render(self.allocation, by_id, tunnel_ifname=self.tunnel.interface)
+                render(
+                    self.allocation,
+                    by_id,
+                    profiles=self.profiles,
+                    tunnel_ifname=self.tunnel.interface,
+                )
             )
             self._bind_tunnel(by_id)
 

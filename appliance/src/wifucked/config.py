@@ -27,13 +27,26 @@ RELEASE_FILE = Path(os.getenv("WIFUCKED_RELEASE_FILE", "/etc/wifucked-release"))
 
 @dataclass(slots=True)
 class LanConfig:
+    #: Broadcast SSID for "single" mode (ADR-020) — the only mode currently
+    #: shipped by default.
+    ssid: str = "Stable_wifi"
+    #: Only used by the "two_bss"/"two_psk" modes, kept for when the radio
+    #: spike (docs/radio-spike.md) clears them for use again.
     critical_ssid: str = "Stable_critical"
     besteffort_ssid: str = "Stable_besteffort"
     address: str = "10.44.0.1"
     prefix: int = 24
-    #: Set at first boot from the radio capability probe (ADR-014). "two_bss" or
-    #: "two_psk"; everything above the LAN layer sees VLANs either way.
-    lan_mode: str = "two_bss"
+    #: "single" (ADR-020, default), "two_bss", or "two_psk" (ADR-014, both
+    #: unverified — see docs/radio-spike.md). Everything above the LAN layer
+    #: sees VLANs, not SSIDs, so the choice is invisible from there up; in
+    #: "single" mode there is exactly one VLAN-equivalent class
+    #: (`policy.profiles_for_lan_mode`).
+    lan_mode: str = "single"
+    #: Whether Wi-Fi networks are discovered as WAN candidates (ADR-020).
+    #: False by default: the onboard radio's only job is broadcasting the
+    #: hotspot. WAN is USB tethering / USB Ethernet only until this is turned
+    #: on. Does not affect the hotspot broadcast itself.
+    wan_uses_wifi: bool = False
 
 
 @dataclass(slots=True)

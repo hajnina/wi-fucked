@@ -1,5 +1,11 @@
 # Architecture
 
+> **Currently shipping:** one plain SSID, no `Stable_critical` /
+> `Stable_besteffort` split, WAN discovery limited to USB tethering and USB
+> Ethernet. This document describes the target design; the gap is deliberate
+> and interim — see [ADR-020](adr/ADR-020-interim-single-hotspot.md) and
+> [`roadmap.md`](roadmap.md).
+
 ## The split that everything else follows
 
 > **Control plane is Python. Data plane is the kernel. No packet is ever touched
