@@ -107,6 +107,22 @@ class TestHostapdConfig:
         identity = derive_identity(SERIAL, LanConfig())
         assert "channel=11" in hostapd_config(identity, 11, "two_bss")
 
+    def test_open_network_drops_wpa_entirely(self):
+        """ADR-021: first boot on headless hardware has no other way in."""
+        identity = derive_identity(SERIAL, LanConfig())
+        rendered = hostapd_config(identity, 6, "single", open_network=True)
+
+        assert identity.ssid in rendered
+        assert "wpa" not in rendered.lower()
+        assert identity.passphrase not in rendered
+
+    def test_open_network_is_opt_in(self):
+        """Default behaviour is unchanged: secured unless asked otherwise."""
+        identity = derive_identity(SERIAL, LanConfig())
+        rendered = hostapd_config(identity, 6, "single")
+
+        assert f"wpa_passphrase={identity.passphrase}" in rendered
+
 
 class TestLanIfnameForProfileSingleMode:
     def test_every_profile_maps_to_the_bare_base_interface(self):

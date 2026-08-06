@@ -47,6 +47,13 @@ class LanConfig:
     #: hotspot. WAN is USB tethering / USB Ethernet only until this is turned
     #: on. Does not affect the hotspot broadcast itself.
     wan_uses_wifi: bool = False
+    #: "single" mode ships with no Wi-Fi security on first boot (ADR-021).
+    #: There is no button and no screen on this hardware, so an unauthenticated
+    #: AP is the only way to reach the device at all before anything else is
+    #: configured. The derived passphrase is still generated and printed on
+    #: the label so the network can be secured afterwards; nothing does that
+    #: automatically.
+    open_on_first_boot: bool = True
 
 
 @dataclass(slots=True)
