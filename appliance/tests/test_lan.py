@@ -63,6 +63,18 @@ class TestIdentityDerivation:
 
 
 class TestHostapdConfig:
+    def test_single_mode_is_one_ssid_one_passphrase_no_vlan(self):
+        """ADR-020: the current default, and the config with the fewest driver
+        assumptions — no `bss=`, no dynamic VLAN.
+        """
+        identity = derive_identity(SERIAL, LanConfig())
+        rendered = hostapd_config(identity, 6, "single")
+
+        assert identity.ssid in rendered
+        assert f"wpa_passphrase={identity.passphrase}" in rendered
+        assert "bss=" not in rendered
+        assert "vlan" not in rendered.lower()
+
     def test_two_bss_layout_declares_both_ssids(self):
         identity = derive_identity(SERIAL, LanConfig())
         rendered = hostapd_config(identity, 6, "two_bss")
@@ -94,6 +106,15 @@ class TestHostapdConfig:
     def test_channel_is_honoured(self):
         identity = derive_identity(SERIAL, LanConfig())
         assert "channel=11" in hostapd_config(identity, 11, "two_bss")
+
+
+class TestLanIfnameForProfileSingleMode:
+    def test_every_profile_maps_to_the_bare_base_interface(self):
+        assert lan_ifname_for_profile(BEST_EFFORT, "single") == "wlan0"
+        assert lan_ifname_for_profile(CRITICAL, "single") == "wlan0"
+
+    def test_honours_a_non_default_base_interface(self):
+        assert lan_ifname_for_profile(BEST_EFFORT, "single", "wlan2") == "wlan2"
 
 
 class TestLanIfnameForProfile:

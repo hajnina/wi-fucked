@@ -386,9 +386,18 @@ class TestConfig:
     def test_defaults_produce_a_working_appliance(self):
         """First boot has no config, and neither does a factory reset."""
         config = Config()
+        assert config.lan.ssid
         assert config.lan.critical_ssid
         assert config.lan.besteffort_ssid
         assert config.thresholds.activation_dwell_s > 0
+
+    def test_default_lan_mode_is_the_single_hotspot_interim(self):
+        """ADR-020: the config with the fewest driver assumptions ships by
+        default, until the radio spike (docs/radio-spike.md) clears the
+        two-class layouts for use.
+        """
+        assert Config().lan.lan_mode == "single"
+        assert Config().lan.wan_uses_wifi is False
 
     def test_api_does_not_bind_every_interface_by_default(self):
         """Regression guard: the dashboard/API must never default to 0.0.0.0 —

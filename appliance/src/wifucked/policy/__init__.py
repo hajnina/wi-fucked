@@ -55,6 +55,24 @@ BEST_EFFORT = ServiceProfile(
 
 DEFAULT_PROFILES: tuple[ServiceProfile, ...] = (CRITICAL, BEST_EFFORT)
 
+#: The only profile a single, undifferentiated hotspot can offer (ADR-020).
+#: Deliberately BEST_EFFORT, never CRITICAL: BEST_EFFORT cannot trigger BACKUP
+#: (`may_use_backup=False`), so collapsing both classes onto one SSID can never
+#: accidentally spend the user's money on traffic that only asked for best-effort.
+SINGLE_LAN_PROFILES: tuple[ServiceProfile, ...] = (BEST_EFFORT,)
+
+
+def profiles_for_lan_mode(lan_mode: str) -> tuple[ServiceProfile, ...]:
+    """Which service profiles actually exist for a given LAN configuration.
+
+    `"single"` (ADR-020) has no VLAN split, so `CRITICAL` cannot be offered —
+    every caller that classifies or accounts LAN traffic must use this rather
+    than assuming `DEFAULT_PROFILES`.
+    """
+    if lan_mode == "single":
+        return SINGLE_LAN_PROFILES
+    return DEFAULT_PROFILES
+
 
 def by_priority(
     profiles: tuple[ServiceProfile, ...] = DEFAULT_PROFILES,

@@ -340,6 +340,45 @@ imposed don't apply and a real `tcpdump` can watch the packet directly.
   achieved; every other claim above was independently confirmed against
   live kernel state, not inferred.
 
+### Interim single-hotspot default (ADR-020)
+
+**Status:** `UNCONFIRMED`
+**Touches:** `appliance/stage-custom/opt/wifucked/firstboot.sh` (`LAN_MODE` no
+longer probed, fixed to `single`), `appliance/src/wifucked/lan/__init__.py`
+(`hostapd_config`'s `"single"` branch, `lan_ifname_for_profile`),
+`appliance/src/wifucked/config.py` (`LanConfig.lan_mode` default),
+`appliance/src/wifucked/discovery/__init__.py` (`Discoverer` defaults to
+USB-only)
+**Related:** [ADR-020](adr/ADR-020-interim-single-hotspot.md), the "AP
+bring-up" entry above, #15
+
+**What actually runs today:** First boot no longer probes `iw phy` for
+multi-BSS support and no longer picks between `two_bss`/`two_psk`. It writes a
+single-BSS `hostapd.conf` unconditionally — one SSID, one passphrase, no
+`vlan_id`, no VLAN subinterfaces for `systemd-networkd` to address. The
+running daemon discovers only USB tethering and USB Ethernet as WAN by
+default (`Config.lan.wan_uses_wifi = False`); the radio is not shared between
+AP and station.
+
+**What is unconfirmed:** Whether a single-BSS `hostapd.conf` actually brings
+up the AP on this hardware — this is expected to be *more* likely to work
+than the two-BSS config #15 reported failing on (fewer driver assumptions),
+but nobody has watched it boot. Also unconfirmed: whether the label text
+generated for single mode (`firstboot.sh`) matches what actually gets
+printed/read by support.
+
+**Built-in fallback if it fails:** Same as the "AP bring-up" entry above —
+`hostapd`'s own `Restart=on-failure`, and `wifucked-console.service` for
+observing why on the next attempt.
+
+**Next step:** Flash an image with this change, boot a device, confirm one
+SSID is visible in a scan, a client can associate and get a DHCP lease with a
+working gateway, and USB tethering still works for WAN.
+
+**History:**
+- 2026-08-06 — change made in response to a direct report of "no hotspot,
+  ever" on real hardware; not yet run against real hardware by anyone.
+
 ---
 
 ## Template for new entries

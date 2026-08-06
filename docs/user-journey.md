@@ -7,6 +7,11 @@ regression.
 The user's mental model must stay: *I have some Internet connections. WI-FUCKED makes
 them work.*
 
+> **Currently shipping:** one plain hotspot, not the two networks below, and
+> WAN limited to USB tethering / USB Ethernet — see
+> [ADR-020](adr/ADR-020-interim-single-hotspot.md). The journey below is the
+> target this interim default is a step toward.
+
 ---
 
 ## J1 — Unbox and first boot

@@ -23,6 +23,9 @@ from wifucked.policy import BEST_EFFORT, CRITICAL, ServiceProfile
 class LanIdentity:
     """Derived once, from the Pi serial, and then immutable."""
 
+    #: Broadcast SSID for "single" mode (ADR-020) — the one shipped by default.
+    ssid: str
+    #: Used only by the "two_bss"/"two_psk" modes (ADR-014, unverified).
     critical_ssid: str
     besteffort_ssid: str
     bssid: str
@@ -47,6 +50,7 @@ def derive_identity(serial: str, config: LanConfig) -> LanIdentity:
     bssid = ":".join(f"{o:02x}" for o in octets)
 
     return LanIdentity(
+        ssid=f"{config.ssid}-{suffix}",
         critical_ssid=f"{config.critical_ssid}-{suffix}",
         besteffort_ssid=f"{config.besteffort_ssid}-{suffix}",
         bssid=bssid,
@@ -67,11 +71,14 @@ def _passphrase(seed: str, salt: str) -> str:
 
 
 def hostapd_config(identity: LanIdentity, channel: int, mode: str, interface: str = "wlan0") -> str:
-    """Render hostapd.conf for the two-BSS or two-PSK layout.
+    """Render hostapd.conf for the single-SSID, two-BSS, or two-PSK layout.
 
-    Which one is chosen depends on what the driver actually supports, probed at
-    first boot (ADR-014). Everything above the LAN layer sees VLANs, so the
-    choice does not leak upwards.
+    "single" (ADR-020, the current default) is one plain BSS with one
+    passphrase — the config with the fewest driver assumptions, chosen because
+    the two-class layouts below depend on unverified multi-BSS / dynamic-VLAN
+    driver behaviour (ADR-013, ADR-014; see docs/radio-spike.md). Everything
+    above the LAN layer sees VLANs (or, in "single" mode, none), so the choice
+    does not leak upwards.
     """
     base = f"""# Generated at first boot. SSID and BSSID are immutable (ADR-012).
 interface={interface}
@@ -86,6 +93,15 @@ wpa=2
 wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 """
+
+    if mode == "single":
+        return (
+            base
+            + f"""ssid={identity.ssid}
+bssid={identity.bssid}
+wpa_passphrase={identity.passphrase}
+"""
+        )
 
     if mode == "two_psk":
         return (
@@ -122,9 +138,17 @@ def lan_ifname_for_profile(
     """The kernel interface a profile's LAN traffic actually arrives on.
 
     Mirrors the layout ``hostapd_config()`` builds, so the two never drift
-    apart. Both modes set a static per-BSS ``vlan_id`` with no ``vlan_file``,
-    and hostapd statically maps that to a ``<bss-iface>.<vlan-id>``
-    subinterface (confirmed against hostapd's own VLAN documentation —
+    apart.
+
+    In ``"single"`` mode (ADR-020) there is no VLAN split: the only profile
+    that exists there is ``BEST_EFFORT`` (``policy.profiles_for_lan_mode``),
+    and its traffic arrives straight on ``base_interface`` with no
+    subinterface at all.
+
+    In the two-class modes, both set a static per-BSS ``vlan_id`` with no
+    ``vlan_file``, and hostapd statically maps that to a
+    ``<bss-iface>.<vlan-id>`` subinterface (confirmed against hostapd's own
+    VLAN documentation —
     https://wireless.wiki.kernel.org/en/users/documentation/hostapd,
     https://gist.github.com/hkwi/8121425). The two modes differ only in which
     BSS carries which profile: ``two_bss`` gives each profile its own BSS
@@ -136,6 +160,8 @@ def lan_ifname_for_profile(
     ``demand/`` (to read per-class byte counters) so this mapping is defined
     once, here, rather than reconstructed independently in each caller.
     """
+    if lan_mode == "single":
+        return base_interface
     if lan_mode == "two_psk" or profile is BEST_EFFORT:
         bss = base_interface
     else:

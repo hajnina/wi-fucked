@@ -16,7 +16,7 @@ import pytest
 
 from wifucked.atomics.model import Atomic, Health, Kind, Mode
 from wifucked.clock import VirtualClock
-from wifucked.config import Config
+from wifucked.config import Config, LanConfig
 from wifucked.daemon import Daemon
 from wifucked.demand import StaticDemand
 from wifucked.enforce import DesiredState
@@ -42,7 +42,7 @@ class Frame:
 class Harness:
     """A daemon plus the levers a scenario needs to move the world."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, lan_mode: str = "two_bss") -> None:
         self.clock = VirtualClock()
         self.hal = build_hal(force_mock=True)
         # Empty world by default: scenarios declare exactly what exists, so a
@@ -54,8 +54,15 @@ class Harness:
         self.prober = ScriptedProber()
         self.demand = StaticDemand(DEFAULT_PROFILES)
 
+        # Most scenarios exercise the two-class allocator/enforcement logic
+        # (ADR-006, ADR-009) — that logic is unaffected by which LAN broadcast
+        # mode ships by default (ADR-020: `Config()` alone now defaults to
+        # "single", one undifferentiated class), so the default fixture asks
+        # for "two_bss" explicitly, giving `daemon.profiles == DEFAULT_PROFILES`
+        # as these scenarios were written to assert. `test_single_hotspot.py`
+        # passes `lan_mode="single"` to exercise the interim default itself.
         self.daemon = Daemon(
-            Config(),
+            Config(lan=LanConfig(lan_mode=lan_mode)),
             hal=self.hal,
             clock=self.clock,
             telemetry=Telemetry(self.clock, None),
