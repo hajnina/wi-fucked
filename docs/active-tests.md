@@ -381,6 +381,100 @@ working gateway, and USB tethering still works for WAN.
 
 ---
 
+### WAN-chaos download proof: real control loop survives two degrading WAN links
+
+**Status:** `CONFIRMED` (as a QEMU proof — see "what is unconfirmed" for the
+real-hardware gap this does not close)
+**Touches:** `appliance/tests/qemu/chaos_driver.py`,
+`chaos_guest_init.sh`, `chaos_topology.sh`, `chaos_wan.sh`,
+`build_chaos_initramfs.sh`, `run_wan_chaos_download_test.sh` (all new, this
+session) — exercises the real `wifucked.allocator.Allocator`,
+`wifucked.probe.LinuxProber`, `wifucked.tunnel.WireGuardTunnel`,
+`wifucked.enforce.LinuxEnforcer`/`render`, unmodified
+**Related:** [ADR-004](adr/ADR-004-failover-not-aggregation.md),
+[ADR-005](adr/ADR-005-tunnel-is-mandatory.md),
+[ADR-019](adr/ADR-019-lan-egress-through-the-tunnel.md),
+[ADR-020](adr/ADR-020-interim-single-hotspot.md), the ADR-019 QEMU entry
+above, `appliance/tests/qemu/README.md`
+
+**What this is:** the QEMU packet-routing proof above showed one injected
+packet reaching the far side once, with a one-shot `render()`/`reconcile()`
+snapshot. This test instead loops the real control-loop steps
+`wifucked.daemon.Daemon.tick()` performs each cycle — active RTT/loss
+probing, allocator decision, tunnel rebind, kernel reconciliation — every 3s
+for a 90s run, against two real WAN virtio-net links the host actively
+degrades throughout, while a real `curl` HTTP download runs concurrently
+from a LAN-side client, through the appliance's real nft marking, policy
+routing, WireGuard tunnel, and the fabric's real forwarding+NAT, to a real
+HTTP server standing in for "the Internet."
+
+**What was independently confirmed**, by direct inspection of the run's
+output, not by a bare exit code:
+
+- The allocator reacted to real, kernel-measured degradation (not injected
+  values) and switched the tunnel's bound WAN **4 times** in one 90s run,
+  including once in direct response to a real interface being brought fully
+  down (`ip link set eth1 down`, chaos phase 7) — `wg show`/`tunnel.bind_to()`
+  moved the session onto `wan-b` within one probe cycle.
+- A single, continuous HTTP download (6 MiB) — one TCP connection between
+  the LAN-client netns and the "Internet" netns's `http.server`, tunneled
+  through WireGuard and NATed by the fabric the whole way — completed with
+  `curl` exit code 0 and a byte-for-byte matching SHA-256 checksum,
+  throughout 4 WAN swaps, a real link-down/up cycle on each WAN, and
+  sustained bandwidth throttling down to 64–128 kbit/s.
+- This is ADR-005/ADR-019's promise made concrete: WireGuard's endpoint
+  roaming plus the allocator's failover kept one client-visible TCP session
+  alive across the underlying WAN changing repeatedly, with zero corrupted
+  or dropped bytes.
+- Confirms ADR-004's "failover, not aggregation" model does what it claims
+  under real, if crude, WAN chaos — not just against `Allocator.decide()`
+  unit/scenario tests.
+
+**What is unconfirmed:**
+- **Loss/jitter shaping, not just bandwidth and outages.** This session's
+  sandbox kernel has `tbf`/`htb`/`pfifo` compiled in but no `netem` module
+  and no `modprobe` to load one (confirmed: `tc qdisc add ... netem` returns
+  "Specified qdisc kind is unknown"). `chaos_wan.sh` detects this and falls
+  back to bandwidth throttling plus real link down/up instead of packet
+  loss/delay/jitter. A run on a host with `netem` available would exercise a
+  meaningfully different (and more realistic — lossy-but-present, not just
+  present-or-absent) failure mode; the code already picks it up
+  automatically if present, but nobody has run that path.
+- **This is a QEMU proof, not a real-radio proof**, same caveat as the
+  ADR-019 entry above: no real `hostapd`, no real Wi-Fi association, no real
+  RF. "The AP never drops" (SOP-003's invariant) is approximated here by "the
+  LAN-facing TCP session and its `nft`/route state never fail" — a real
+  client's real 802.11 association surviving a channel move or radio
+  hiccup is a different, still-open question (see the "AP+STA SHARED
+  profile" and "AP bring-up" entries above).
+- **`LinuxProber`'s active-probe path was exercised for real for the first
+  time** by this test (the ADR-019 proof never called it) — this is also the
+  first real confirmation that `ping -I <ifname>` binding, loss parsing, and
+  the RTT-floor bufferbloat baseline behave correctly against genuinely
+  shaped traffic, not just the probe module's own unit tests.
+
+**Built-in fallback if the untested parts are wrong:** none beyond what's
+already documented for the entries above — `netem` unavailability is a
+sandbox-environment gap in this proof's *chaos realism*, not a code path
+with a fallback; the appliance's own actual fallback behavior
+(`csa_unavailable`, `RadioManager`, `Daemon`'s reconciliation loop) is
+unaffected either way.
+
+**Next step:** run `appliance/tests/qemu/run_wan_chaos_download_test.sh` on
+a host with real `netem` support to get loss/jitter shaping instead of the
+bandwidth/outage-only fallback; separately, the real-hardware next step is
+unchanged from the entries above — this test does not reduce what still
+needs a real Pi with real radios.
+
+**History:**
+- 2026-08-06 — built and run this session: two full passes, both `PASS`
+  (`switch_count=4`, checksum-correct download each time), one earlier
+  attempt caught and fixed a real topology bug (the WAN atomics had no route
+  to the probe target at all, unrelated to chaos — probe reported spurious
+  100% loss immediately on boot until fixed).
+
+---
+
 ## Template for new entries
 
 ```markdown

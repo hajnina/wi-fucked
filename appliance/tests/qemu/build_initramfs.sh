@@ -20,14 +20,23 @@
 #   kernel is deliberately a different, purpose-fetched one.
 #
 # Run `download_kernel.sh` first if vmlinuz-lts/modloop-lts aren't present.
+#
+# The guest's PID-1 script and driver payload are overridable
+# (INIT_SCRIPT/DRIVER_SCRIPT/DRIVER_DEST/ROOTFS_NAME/OUT_NAME) so the WAN-chaos
+# download proof (run_wan_chaos_download_test.sh) can reuse this build —
+# same busybox/ip/nft/wg/python/kernel-module payload, different guest
+# logic — instead of duplicating this file.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
 WORK="${QEMU_TEST_WORKDIR:-${HERE}/.work}"
 KERNEL_DIR="${WORK}/kernel"
-ROOTFS="${WORK}/initramfs-root"
-OUT="${WORK}/initramfs.cpio.gz"
+ROOTFS="${WORK}/${ROOTFS_NAME:-initramfs-root}"
+OUT="${WORK}/${OUT_NAME:-initramfs.cpio.gz}"
+INIT_SCRIPT="${INIT_SCRIPT:-${HERE}/guest_init.sh}"
+DRIVER_SCRIPT="${DRIVER_SCRIPT:-${HERE}/driver.py}"
+DRIVER_DEST="${DRIVER_DEST:-driver.py}"
 
 KVER="6.6.110-0-lts"
 
@@ -117,8 +126,8 @@ grep -v '^#' "${HERE}/module_closure.txt" | grep -v '^[[:space:]]*$' | while rea
 done
 
 echo "--- init script"
-install -m 0755 "${HERE}/guest_init.sh" "${ROOTFS}/init"
-install -m 0755 "${HERE}/driver.py" "${ROOTFS}/opt/wifucked/driver.py"
+install -m 0755 "${INIT_SCRIPT}" "${ROOTFS}/init"
+install -m 0755 "${DRIVER_SCRIPT}" "${ROOTFS}/opt/wifucked/${DRIVER_DEST}"
 
 echo "--- packing cpio"
 ( cd "${ROOTFS}" && find . -print0 | cpio --null -ov --format=newc 2>/dev/null | gzip -1 > "${OUT}" )
