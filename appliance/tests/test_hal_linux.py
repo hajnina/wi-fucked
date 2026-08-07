@@ -157,3 +157,65 @@ class TestParseScanDump:
 
     def test_no_bss_lines_returns_no_networks(self):
         assert _parse_scan_dump("command line reported nothing useful\n") == []
+
+
+class TestAttemptClientLeaseSkipsWhenAlreadyAddressed:
+    """A real e2e run (docs/backlog/traffic-blockers.md item 16) found that
+    every real WAN atomic gets fed into this exact code path — NetworkManager
+    manages every wired/USB-Ethernet interface by default (only wlan0*/wg0
+    are unmanaged), so a genuinely working WAN atomic typically already has
+    an address by the time `lanout`'s classifier runs `attempt_client_lease`
+    on it at all. Running `dhclient -1` concurrently with whatever already
+    holds the interface's DHCP client role competed for the same socket and
+    silently failed — misclassifying a live, working WAN atomic as a bare
+    LAN-out port and starting a rogue DHCP server on a real upstream
+    segment. `attempt_client_lease` must short-circuit on an existing
+    address instead of ever invoking `dhclient` on top of it.
+    """
+
+    def test_existing_address_short_circuits_without_running_dhclient(self, monkeypatch):
+        from wifucked.hal.linux import LinuxDhcp
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv, timeout=10.0):
+            calls.append(argv)
+            if argv[:2] == ["ip", "-j"] and "addr" in argv:
+                return '[{"addr_info":[{"family":"inet","local":"10.77.1.50"}]}]'
+            if argv[:2] == ["ip", "-j"] and "route" in argv:
+                return '[{"gateway":"10.77.1.1"}]'
+            raise AssertionError(f"dhclient must not run when an address already exists: {argv}")
+
+        monkeypatch.setattr("wifucked.hal.linux._run", fake_run)
+
+        lease = LinuxDhcp().attempt_client_lease("enx001122334455", timeout_s=8.0)
+
+        assert lease is not None
+        assert lease.ip == "10.77.1.50"
+        assert lease.gateway == "10.77.1.1"
+        assert not any(argv[0] == "dhclient" for argv in calls), (
+            "dhclient ran even though the interface already had a usable address"
+        )
+
+    def test_no_existing_address_still_runs_dhclient(self, monkeypatch):
+        from wifucked.hal.linux import LinuxDhcp
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv, timeout=10.0):
+            calls.append(argv)
+            if argv[0] == "dhclient":
+                return "done"
+            if argv[:2] == ["ip", "-j"] and "addr" in argv:
+                return "[]"
+            if argv[:2] == ["ip", "-j"] and "route" in argv:
+                return "[]"
+            return None
+
+        monkeypatch.setattr("wifucked.hal.linux._run", fake_run)
+
+        LinuxDhcp().attempt_client_lease("enx001122334455", timeout_s=8.0)
+
+        assert any(argv[0] == "dhclient" for argv in calls), (
+            "pre-fix behaviour (attempt a real lease) must still work with no address yet"
+        )

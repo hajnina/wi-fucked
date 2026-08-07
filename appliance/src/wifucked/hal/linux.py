@@ -567,6 +567,37 @@ class LinuxDhcp(DhcpHal):
 
     def attempt_client_lease(self, ifname: str, timeout_s: float) -> DhcpLease | None:
         started = time.monotonic()
+        # This interface may already have a usable address — NetworkManager
+        # manages every wired/USB-Ethernet interface by default (only
+        # wlan0*/wg0 are unmanaged, setup_rpi.sh), so a port that's already
+        # a genuine, working WAN source typically already has one by the
+        # time this classifier runs at all. Running our own `dhclient -1`
+        # concurrently with whatever already holds the interface's DHCP
+        # client role competes for the same BOOTP/DHCP socket and can
+        # spuriously fail or time out — which silently misclassifies an
+        # already-working WAN atomic as a bare LAN-out port and starts a
+        # DHCP server on a live upstream segment (confirmed via a real e2e
+        # run: docs/backlog/traffic-blockers.md item 16's investigation).
+        # A lease already existing already proves an upstream network is
+        # here, which is this method's whole contract — no need to
+        # negotiate a new one.
+        existing = self._read_lease(ifname)
+        if existing is not None:
+            log.info(
+                "DHCP client lease attempt",
+                extra={
+                    "workflow": "lan_out_dhcp_client_attempt",
+                    "state": "completed",
+                    "intent": "find out whether an upstream network exists on this port",
+                    "ifname": ifname,
+                    "timeout_s": timeout_s,
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                    "lease_obtained": True,
+                    "reason": "interface already had a usable address; skipped dhclient "
+                    "to avoid competing with whatever already holds its DHCP client role",
+                },
+            )
+            return existing
         pidfile = f"/run/wifucked-dhclient-{_safe_ifname(ifname)}.pid"
         leasefile = f"/run/wifucked-dhclient-{_safe_ifname(ifname)}.leases"
         ok = (
