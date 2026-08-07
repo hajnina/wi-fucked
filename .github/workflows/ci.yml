@@ -94,6 +94,47 @@ jobs:
       - name: Run tests
         run: ./run_all_tests.sh
 
+  # Real hostapd + real dnsmasq + real dashboard daemon, wired to a real
+  # kernel 802.11 stack via mac80211_hwsim (real association/DHCP frames, no
+  # RF, no Pi) and driven by a real headless Chromium (Playwright). Catches
+  # exactly the class of bug the unit/scenario suite above cannot: hostapd
+  # bringing up but a client being unable to actually reach the gateway or
+  # the setup dashboard. Needs root for network namespaces and binding
+  # hostapd to a real interface, so it runs as its own job rather than
+  # inside run_all_tests.sh (SOP-003) — see appliance/tests/e2e/README.md.
+  e2e-ap-dashboard:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hostapd dnsmasq iw isc-dhcp-client
+
+      - name: Install Python dependencies (root, so the netns-exec'd test can use them)
+        run: |
+          sudo python3 -m pip install --break-system-packages --quiet \
+            -r appliance/tests/e2e/requirements.txt
+          sudo python3 -m playwright install --with-deps chromium
+
+      - name: Run the AP + dashboard E2E proof
+        run: |
+          sudo env WIFUCKED_E2E_PYTHON=python3 \
+            appliance/tests/e2e/run_e2e_ap_test.sh "${GITHUB_WORKSPACE}/e2e-artifacts"
+
+      - name: Upload E2E artifacts (report, screenshots, logs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ap-dashboard-results
+          path: e2e-artifacts/
+          retention-days: 30
+
   version:
     runs-on: ubuntu-24.04
     outputs:
@@ -115,7 +156,7 @@ jobs:
           fi
 
   bake:
-    needs: [lint, test, version]
+    needs: [lint, test, e2e-ap-dashboard, version]
     uses: ./.github/workflows/reusable_image_pipeline.yml
     permissions:
       contents: write

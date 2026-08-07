@@ -121,10 +121,29 @@ gateway on both `Stable_critical` and `Stable_besteffort`, and phone tethering
 via OTG still works (the fix from PR #16 this builds on top of, also still
 `UNCONFIRMED`).
 
+**Independently narrowed (not closed) by a CI proof:**
+[`appliance/tests/e2e/`](../appliance/tests/e2e/) (`e2e-ap-dashboard` in CI,
+every PR) boots the real `hostapd`/`dnsmasq` against the real generated
+config, associates a real client over `mac80211_hwsim`, and confirms the
+gateway answers ICMP and the dashboard answers on `:8080` — the exact
+symptom this section exists to prevent, reproduced and checked on every PR
+rather than only when someone happens to boot real hardware. What it does
+**not** confirm: real `brcmfmac`/CYW43438 firmware, real `NetworkManager`
+`unmanaged-devices` behaviour, or real `systemd-networkd` applying
+`networkd_config()`'s generated unit (that test assigns the gateway address
+directly instead — see its README's "What this doesn't prove"). A green run
+there narrows what's left to test on hardware; it does not move this entry
+to `CONFIRMED`.
+
 **History:**
 - 2026-08-02 — fix merged in response to #15 continuing to report "no AP" after
   PR #16 (which addressed OTG tethering and diagnostics, not this). Not yet
   run against real hardware by anyone.
+- 2026-08-07 — `appliance/tests/e2e/` CI proof added (real hostapd/dnsmasq/
+  mac80211_hwsim/Playwright, gated in CI on every PR). Confirms the
+  generated config and gateway/dashboard reachability in a real (if
+  RF-free, non-Pi) kernel network stack; real-hardware confirmation is
+  still the open item above.
 
 ---
 
