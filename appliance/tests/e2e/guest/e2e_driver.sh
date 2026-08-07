@@ -632,9 +632,22 @@ wait "${DOWNLOAD_PID}" 2> /dev/null
 DOWNLOAD_RC=$?
 ACTUAL_SHA256="$(sha256sum "${DOWNLOAD_FILE}" 2> /dev/null | awk '{print $1}')"
 if [ "${DOWNLOAD_RC}" -ne 0 ]; then
+    # Item 16 (docs/backlog/traffic-blockers.md): wg show alone has already
+    # shown a genuine handshake with byte counts too small to be the actual
+    # download every time this has failed, and the host-side FORWARD chain
+    # (fabric-host-diagnostics.log) has shown zero packets ever reaching it
+    # via wg0 — meaning whatever's wrong may be on this side, before the
+    # packet ever leaves the appliance. `ip rule`/`ip route table <n>` show
+    # whether enforce.render() actually installed a route to wg0 for this
+    # client's marked traffic (or whether item 15's fix only solved the
+    # ceiling_bps computation, not this); `ip route get` with the actual
+    # fwmark shows what the kernel's routing decision really is; rp_filter
+    # values matter because a strict reverse-path check can silently drop a
+    # packet before it ever reaches nft's counters.
+    FWMARK="$(nft list ruleset 2>&1 | grep -oE 'meta mark set 0x[0-9a-fA-F]+' | head -1 | awk '{print $NF}')"
     fragment "18_tunnel_download_survives_chaos" fail "${t0}" \
         "curl exited ${DOWNLOAD_RC} downloading through the real tunnel during ${CHAOS_DURATION_S}s of real WAN chaos" \
-        "$(cat "${DOWNLOAD_LOG}"); wg: $(wg show 2>&1); nft: $(nft list ruleset 2>&1)"
+        "$(cat "${DOWNLOAD_LOG}"); wg: $(wg show 2>&1); nft: $(nft list ruleset 2>&1); ip_rule: $(ip rule show 2>&1); ip_route_tables: $(for t in $(ip rule show 2>&1 | grep -oE 'lookup [0-9]+' | awk '{print $2}' | sort -u); do echo "table ${t}:"; ip route show table "${t}" 2>&1; done); route_get_wg0: $(ip route get 198.51.100.2 mark "${FWMARK:-0x0}" 2>&1); rp_filter: $(for f in /proc/sys/net/ipv4/conf/*/rp_filter; do echo "${f}=$(cat "${f}" 2>&1)"; done)"
 elif [ "${ACTUAL_SHA256}" != "${EXPECTED_SHA256}" ]; then
     fragment "18_tunnel_download_survives_chaos" fail "${t0}" \
         "downloaded file checksum mismatch (expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256:-none}) -- corrupted somewhere in real nft mark -> wg0 -> fabric NAT -> real HTTP server" \
