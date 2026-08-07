@@ -286,6 +286,116 @@ stage `18_tunnel_download_survives_chaos`) is the regression test — it
 should go from FAIL to PASS once this is fixed, on real WAN atomics with
 zero pre-seeded demand.
 
+**Update 2026-08-07:** the fix merged (#51) and stage 18 was re-run on PR
+#48 with it in place. Stage 18 still FAILs — but on different evidence,
+see item 16. The `up_bps`/first-packet gap described above is fixed; a
+second, separate bug sits behind it.
+
+### 16. investigate: primary WAN stable and healthy, but zero bytes ever
+### reach the far side of the tunnel
+
+**Status:** open, not yet root-caused
+**Found by:** re-run of `appliance/tests/e2e/`'s fabric/tunnel proof (PR
+#48, run `31187384249`) after merging item 15's fix. Stages 1–17 all PASS,
+including `17_wan_failover_observed`. Stage `18_tunnel_download_survives_chaos`
+still FAILs: `curl: (28) Failed to connect to 198.51.100.2 port 8000 after
+131154 ms`.
+
+**What the artifacts actually show, distinct from item 15:**
+- `state_snapshots.json`: `allocation.primary_id` goes `null` (first four
+  snapshots, still discovering) then locks onto `usbeth:b9afbc8466` and
+  **never changes again** for the rest of the 150s run. That atomic's
+  `health` is `"good"` in every single snapshot for the entire run — the
+  allocator picked a healthy WAN and correctly never had a reason to move
+  off it. (The one atomic that ever shows `"degraded"`, `usbeth:29fbc08cfe`,
+  is not primary and irrelevant to this path.) `17_wan_failover_observed`'s
+  "1 switch" is just `null → usbeth:b9afbc8466`, not a real failover — no
+  actual re-routing event happens in this run.
+- `internet-httpd.log` (the real HTTP server behind the fabric that the
+  download targets) is **completely empty** — zero requests arrived, for
+  the full 131s curl waited. Not slow, not partial: nothing ever got there.
+- `wg show` in the curl failure detail shows a live handshake ("34 seconds
+  ago") but `transfer: 184 B received, 552 B sent` — the WireGuard tunnel
+  itself is up and exchanging control traffic, just not carrying the
+  client's actual TCP stream.
+- No `wifucked.enforce` log lines appear in the captured guest console log
+  at all for this run (item 15's investigation found them there directly),
+  so whatever's happening here may be below or beside the allocator/enforce
+  reconciliation loop entirely — e.g. NAT/masquerade on the tunnel egress,
+  the policy-route table the client's traffic is actually classified into,
+  or something MTU/PMTU-shaped over WireGuard. Needs its own trace, not a
+  guess.
+
+**Why this matters:** item 15 fixed "a client can never get a route
+allocated." This is "even given a stable, correctly-chosen, healthy primary
+WAN with a live WireGuard handshake, a real client's real TCP stream still
+never arrives at the other end." Two independent breaks in the same path —
+fixing one did not fix the other, and PR #48's stage 18 is the only test
+that has ever caught either of them; every hand-seeded proof before it
+sidestepped both.
+
+**Next step:** needs someone to reproduce locally (or re-run the e2e job
+with more capture around `wifucked.enforce`/`nft`/`ip rule`/`ip route`
+state at the moment curl is issued) rather than being fixed blind. Until
+then stage 18 stays red and PR #48 stays unmerged.
+
+**Status:** root-caused — two independent bugs, one fixed here, one is CI
+infrastructure debt
+
+Added real diagnostics to the e2e harness itself (host-side `iptables -L
+FORWARD`/`nft list ruleset`/`conntrack -L`/route-get, guest-side `ip
+rule`/`ip route show table N`/`rp_filter`, an unbuffered Internet stand-in,
+and a full-run dump of `wifucked.enforce`'s own reconcile log) instead of
+continuing to guess from `wg show`'s byte counters alone. That surfaced two
+real, independent things:
+
+1. **CI-environment-only, real but not this bug's cause:** GitHub-hosted
+   runners have `dockerd` running by default, which sets the host's
+   `FORWARD` chain policy to `DROP` the moment it enables IP forwarding
+   (moby/moby#50566, Debian bug #865975) — silently drops the CI harness's
+   own WAN/tunnel/Internet-stand-in forwarding regardless of how correct
+   `enforce`/`tunnel`/fabric NAT are. Fixed in the harness itself
+   (`appliance/tests/e2e/run_e2e_ap_test.sh`, explicit `iptables -I FORWARD`
+   accepts inserted into the same chain `dockerd` set the policy on) — see
+   `docs/active-tests.md`'s ADR-019 entry. Real infrastructure debt worth
+   having fixed, but proven **not** the reason stage 18 was failing: the
+   fix alone did not change the outcome on a re-run.
+2. **The actual cause — a second, independent capacity-side deadlock,
+   same shape as item 15 but on the other half of the same expression:**
+   `wifucked.enforce`'s own `route_rules=0` on **every single** reconcile
+   tick across a full 150s+ run (`enforce_reconcile_trend.log`, a new
+   full-run dump added specifically to catch this) proved no policy route
+   was *ever* installed, for the entire run — not a timing race. Traced to
+   `allocator/__init__.py` `_usable_capacity()`: it only counts an atomic's
+   capacity once `confidence >= min_confidence`, and confidence only ever
+   rises from `probe.PassiveProber`'s `fold()` on a *saturated* observation
+   — which needs a route to already exist to carry the traffic that would
+   saturate it. Item 15 fixed the *demand* half of `_build()`'s
+   `min(want_bps, headroom)`; `headroom` (from `_usable_capacity()`) is the
+   other half, and item 15's fix never touched it. Every scenario test that
+   ever exercised this path — including item 15's own — hand-seeded
+   `Capacity` via `harness.add_atomic(capacity_bps=...)`, exactly like every
+   earlier proof hand-seeded demand, which is why no scenario test ever
+   caught this either.
+
+**Fix:** [ADR-024](../adr/ADR-024-capacity-bootstrap-floor.md) — a NORMAL
+atomic that has never been measured at all (`capacity.measured_at is None`)
+gets a small, fixed bootstrap headroom (`BOOTSTRAP_HEADROOM_BPS = 256_000`)
+instead of zero, enough to open a route for a first client's first
+connection and let it generate the traffic `PassiveProber` needs to produce
+a real measurement. Never written into `Capacity` itself (stays out of
+`down_bps`/`confidence` entirely, so it never reports as a measurement
+anywhere), stops applying permanently the moment a real fold happens, and —
+same scope as item 15 — NORMAL-only; BACKUP is unaffected (ADR-006).
+Scenario coverage: `appliance/tests/scenarios/test_capacity_bootstrap.py`
+(the deadlock itself, the one-time-only property, and BACKUP exclusion).
+
+**Verification:** `appliance/tests/e2e/`'s fabric/tunnel proof (PR #48,
+stage `18_tunnel_download_survives_chaos`) remains the regression test for
+both bugs together — should go from FAIL to PASS with both fixes in place,
+on real WAN atomics with zero pre-seeded demand *and* zero pre-seeded
+capacity.
+
 ## Verification (every item)
 
 ```

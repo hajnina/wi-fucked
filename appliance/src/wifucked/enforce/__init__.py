@@ -29,10 +29,10 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from wifucked.allocator import Allocation
-from wifucked.atomics.model import Atomic
+from wifucked.atomics.model import Atomic, PortRole
 from wifucked.lan import lan_ifname_for_profile
 from wifucked.logging import get_logger
-from wifucked.policy import DEFAULT_PROFILES, ServiceProfile
+from wifucked.policy import BEST_EFFORT, DEFAULT_PROFILES, ServiceProfile
 
 log = get_logger("enforce")
 
@@ -96,9 +96,17 @@ class DesiredState:
     shaping: tuple[Shaping, ...]
     routes: tuple[RouteRule, ...]
     marks: tuple[tuple[int, int], ...]  # (vlan, fwmark)
+    #: LAN-out ports (ADR-023): (ifname, fwmark) pairs for wired ports the
+    #: DHCP-attempt/passive-listen pipeline switched into DHCP-server mode.
+    #: Kept separate from `marks` because these ifnames are dynamic (a port
+    #: can appear, disappear, or move which physical socket it's in) where
+    #: the AP-VLAN marks `marks` otherwise carries are static per lan_mode —
+    #: `_nft_ruleset()` needs the real ifname to build a rule from, which
+    #: `marks` alone (vlan/fwmark only) cannot supply.
+    lan_out_marks: tuple[tuple[str, int], ...] = ()
 
     def key(self) -> tuple:
-        return (self.shaping, self.routes, self.marks)
+        return (self.shaping, self.routes, self.marks, self.lan_out_marks)
 
 
 class Enforcer(Protocol):
@@ -138,6 +146,23 @@ def render(
     # Dropping the mark when a profile has no active share would leave that
     # traffic unclassified the moment an atomic appeared to steer it.
     marks: list[tuple[int, int]] = [(p.vlan, p.vlan) for p in profiles]
+
+    # LAN-out ports (ADR-023): a wired port the DHCP-attempt/passive-listen
+    # pipeline switched into DHCP-server mode gets the same treatment as an
+    # AP LAN client — marked BEST_EFFORT (the class ADR-020's default hotspot
+    # mode already uses for undifferentiated LAN traffic) and, via that
+    # mark's fwmark, routed through the tunnel by whichever RouteRule the
+    # BEST_EFFORT share above already installs. No separate routing table or
+    # route is needed here: the fwmark is what ties the two together.
+    lan_out_marks: list[tuple[str, int]] = sorted(
+        {
+            (atomic.ifname, BEST_EFFORT.vlan)
+            for atomic in atomics.values()
+            if atomic.role is PortRole.LAN_OUT and atomic.present and atomic.ifname
+        }
+    )
+    if lan_out_marks:
+        marks.append((BEST_EFFORT.vlan, BEST_EFFORT.vlan))
 
     for share in allocation.shares:
         if share.ceiling_bps == 0:
@@ -189,6 +214,7 @@ def render(
         shaping=tuple(sorted(shaping, key=lambda s: s.ifname)),
         routes=tuple(sorted(set(routes), key=lambda r: (r.fwmark, r.ifname))),
         marks=tuple(sorted(set(marks))),
+        lan_out_marks=tuple(lan_out_marks),
     )
 
 
@@ -278,7 +304,7 @@ class LinuxEnforcer(Enforcer):
 
         for shaping in desired.shaping:
             self._apply_cake(shaping)
-        self._apply_marks()
+        self._apply_marks(desired.lan_out_marks)
         for route in desired.routes:
             self._apply_route(route)
 
@@ -425,19 +451,24 @@ class LinuxEnforcer(Enforcer):
 
     # -- marking --------------------------------------------------------------
 
-    def _apply_marks(self) -> None:
-        """Install the static LAN-origin marking ruleset.
+    def _apply_marks(self, lan_out_marks: tuple[tuple[str, int], ...] = ()) -> None:
+        """Install the static LAN-origin marking ruleset, plus any dynamic
+        LAN-out port marks (ADR-023).
 
-        The mapping (which LAN interface carries which profile) does not change
-        per allocation, so the simplest correct thing is to declare the whole
-        ``wifucked`` table every reconcile and let nft replace it atomically. The
-        leading ``table`` + ``flush table`` lines make the redeclaration
-        idempotent: the add creates the table if absent so the flush cannot
-        fail, the flush empties it, and the body re-populates it — all inside a
+        The AP-VLAN mapping (which LAN interface carries which profile) does
+        not change per allocation, so the simplest correct thing is to
+        declare the whole ``wifucked`` table every reconcile and let nft
+        replace it atomically. ``lan_out_marks`` is genuinely dynamic — a
+        port can appear or disappear between reconciles — so it comes from
+        ``desired`` each call rather than being baked in at construction
+        like ``self._profiles``/``self._lan_mode`` are. The leading
+        ``table`` + ``flush table`` lines make the redeclaration idempotent:
+        the add creates the table if absent so the flush cannot fail, the
+        flush empties it, and the body re-populates it — all inside a
         single ``nft -f -`` transaction, so there is no window where marking is
         absent (nftables wiki, "Atomic rule replacement").
         """
-        ruleset = self._nft_ruleset()
+        ruleset = self._nft_ruleset(lan_out_marks)
         if self._dry_run:
             log.info(
                 "Would apply nftables marking",
@@ -446,6 +477,7 @@ class LinuxEnforcer(Enforcer):
                     "state": "skipped",
                     "intent": "mark LAN traffic by originating interface",
                     "profiles": len(self._profiles),
+                    "lan_out_ports": len(lan_out_marks),
                     "reason": "dry run",
                 },
             )
@@ -456,9 +488,10 @@ class LinuxEnforcer(Enforcer):
             intent="mark LAN traffic by originating interface",
             stdin=ruleset,
             profiles=len(self._profiles),
+            lan_out_ports=len(lan_out_marks),
         )
 
-    def _nft_ruleset(self) -> str:
+    def _nft_ruleset(self, lan_out_marks: tuple[tuple[str, int], ...] = ()) -> str:
         lines = [
             f"table inet {_TABLE}",
             f"flush table inet {_TABLE}",
@@ -477,6 +510,11 @@ class LinuxEnforcer(Enforcer):
         for profile in self._profiles:
             ifname = lan_ifname_for_profile(profile, self._lan_mode, self._base_interface)
             lines.append(f'        iifname "{ifname}" meta mark set {profile.vlan}')
+        for ifname, fwmark in lan_out_marks:
+            # LAN-out ports (ADR-023): a wired port serving DHCP outward,
+            # marked the same way an AP-side VLAN interface is above — just
+            # keyed by a dynamic ifname instead of a static VLAN subinterface.
+            lines.append(f'        iifname "{ifname}" meta mark set {fwmark}')
         lines += ["    }", "}", ""]
         return "\n".join(lines)
 
@@ -617,10 +655,23 @@ class LinuxEnforcer(Enforcer):
             if iifname is None or markval is None:
                 continue
             try:
-                vlan = int(str(iifname).rsplit(".", 1)[1])
                 fwmark = int(markval)
-            except (ValueError, IndexError):
+            except ValueError:
                 continue
+            try:
+                # AP-VLAN interfaces are named `<bss>.<vlan>` — the vlan
+                # number is the suffix (see `lan_ifname_for_profile`).
+                vlan = int(str(iifname).rsplit(".", 1)[1])
+            except (ValueError, IndexError):
+                # A LAN-out port's ifname (ADR-023, e.g. "eth1") carries no
+                # such suffix. Both this codebase's AP-VLAN marks and its
+                # LAN-out marks always set vlan == fwmark (see `render()`),
+                # so falling back to the mark value itself keeps this tuple
+                # comparable against `DesiredState.marks` for convergence —
+                # imperfect (it can't distinguish a genuinely wrong vlan
+                # from a missing suffix), but correct for every mark this
+                # codebase actually produces today.
+                vlan = fwmark
             marks.append((vlan, fwmark))
         return marks
 

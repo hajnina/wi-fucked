@@ -101,6 +101,53 @@ class UsbHal(Protocol):
     def devices(self) -> list[UsbDevice]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class DhcpLease:
+    """A lease obtained by a bounded DHCP client attempt on one interface."""
+
+    ip: str
+    gateway: str | None = None
+    lease_seconds: int = 0
+
+
+class DhcpHal(Protocol):
+    """The DHCP-attempt -> passive-listen -> DHCP-server pipeline (ADR-023).
+
+    One port, one pipeline, independently of every other port — see the
+    module docstring in ``wifucked.lanout``, which owns sequencing these
+    three calls. Each call is bounded by its own ``timeout_s`` and never
+    raises; a HAL that cannot determine an answer degrades to the
+    conservative outcome at the call site (see ``lanout``'s docstring for
+    why "conservative" means "assume a real DHCP server might be there").
+    """
+
+    def attempt_client_lease(self, ifname: str, timeout_s: float) -> DhcpLease | None:
+        """Try to get a DHCP lease as a client on this interface.
+
+        A lease means an upstream network exists here — the same conclusion
+        that already drives USB Ethernet/tether WAN discovery.
+        """
+
+    def passive_listen_for_foreign_server(self, ifname: str, timeout_s: float) -> bool:
+        """Listen (never transmit) for existing DHCP server traffic on this
+        segment — a DHCPOFFER or DHCPACK from something that is not us.
+
+        Returns ``True`` whenever a foreign server was heard *or* the answer
+        could not be determined (a failed capture, a missing tool). A false
+        "nothing here" is what puts a second, competing DHCP server on a
+        network this device doesn't own (ADR-022's Decision section) — this
+        call is only ever allowed to be wrong in the safe direction.
+        """
+
+    def start_server(self, ifname: str, subnet_third_octet: int, gateway: str) -> bool:
+        """Switch this port into DHCP-server mode, handing out ``gateway``'s
+        /24 starting at .50. Returns whether it was actually applied.
+
+        Never called unless both of the above already ran and came back
+        negative for this interface, this call/pipeline invocation.
+        """
+
+
 class NetHal(Protocol):
     def interfaces(self) -> dict[str, bool]:
         """Interface name to carrier state."""
@@ -139,5 +186,6 @@ class Hal:
     net: NetHal
     led: LedHal
     system: SystemHal
+    dhcp: DhcpHal
     mocked: bool = False
     notes: dict[str, str] = field(default_factory=dict)

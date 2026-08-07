@@ -30,6 +30,12 @@ from wifucked.telemetry import Telemetry
 
 log = get_logger("allocator")
 
+#: Assumed headroom for a NORMAL atomic that has never been measured at all
+#: (ADR-024) — enough to open a route for a first client's first connection,
+#: not a working estimate of "typical" WAN capacity. Never written into
+#: Capacity itself; see `_usable_capacity()`.
+BOOTSTRAP_HEADROOM_BPS = 256_000
+
 
 class BackupState(enum.StrEnum):
     IDLE = "idle"
@@ -251,11 +257,26 @@ class Allocator:
         A low-confidence estimate is a guess, and treating a guess as a
         measurement is how the allocator ends up spending money because it
         mistrusted a link it had simply never measured.
+
+        A NORMAL atomic that has *never* been measured at all
+        (``measured_at is None``) gets ``BOOTSTRAP_HEADROOM_BPS`` instead of
+        zero (ADR-024): without this, no route is ever built for it
+        (`_build()`'s ceiling is gated on this total), so no traffic can ever
+        reach it, so `probe.PassiveProber` never sees a saturated observation
+        to raise its confidence above zero — a real deadlock, confirmed via
+        `route_rules=0` on every reconcile tick of a real, un-hand-seeded
+        150s+ run (docs/backlog/traffic-blockers.md item 16). This is
+        deliberately distinct from "confidence decayed below threshold on a
+        real, aged estimate" — that atomic has `measured_at` set and stays at
+        zero here, same as before; only a link that has *never once* been
+        folded gets the bootstrap allowance, and only once, ever.
         """
         total = 0
         for atomic in pool:
             if decay_confidence(atomic.capacity, now) >= self._t.min_confidence:
                 total += atomic.capacity.down_bps
+            elif atomic.capacity.measured_at is None:
+                total += BOOTSTRAP_HEADROOM_BPS
         return total
 
     def _best(self, pool: list[Atomic], now: float) -> Atomic | None:

@@ -1,3 +1,21 @@
+## v1.5.3 — 2026-08-07
+
+### docs
+- changelog for v1.5.2 [skip ci]
+
+
+## v1.5.2 — 2026-08-07
+
+### feat
+- physically-connected USB devices default to main (#47)
+
+### fix
+- a first-time client can never get routed at all (#51)
+
+### docs
+- changelog for v1.5.1 [skip ci]
+
+
 ## v1.5.1 — 2026-08-07
 
 ### docs

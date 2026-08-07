@@ -670,6 +670,87 @@ this test does not reduce what still needs a real Pi with real radios.
 
 ---
 
+### LAN-out DHCP-server fallback: real dhclient/tcpdump/dnsmasq pipeline
+
+**Status:** `UNCONFIRMED`
+**Touches:** `appliance/src/wifucked/hal/linux.py` (`LinuxDhcp.attempt_client_lease`,
+`passive_listen_for_foreign_server`, `start_server`), `appliance/src/wifucked/lanout/__init__.py`
+(`LanOutClassifier`, live in `Daemon._classify_lan_out_ports()`),
+`appliance/src/wifucked/enforce/__init__.py` (`lan_out_marks`)
+**Related:** [ADR-022](adr/ADR-022-automatic-interface-roles.md),
+[ADR-023](adr/ADR-023-lan-out-port-role.md), `docs/backlog/traffic-blockers.md`
+item 15 (first-packet routing — see note below)
+
+**What actually runs today:** whenever real hardware discovers a present,
+healthy USB-Ethernet/Ethernet atomic with no confirmed lease yet,
+`Daemon._classify_lan_out_ports()` (medium loop, every ~10s) submits a
+background pipeline that: runs real `dhclient -1` against the interface,
+reads the result back via `ip -j addr`/`ip -j route`; if no lease, runs real
+`tcpdump` for `passive_listen_timeout_s` and text-matches its `-v` decode
+for `"BOOTP/DHCP, Reply"`; if nothing heard, writes a real `dnsmasq` drop-in
+config under `/etc/dnsmasq.d/`, adds a real `ip addr` on the interface, and
+runs `systemctl reload dnsmasq.service`. None of this is gated behind
+anything beyond `config.lan_out.enabled` (default `True`) — it runs for real
+on every wired port that lacks a lease, the first time real hardware sees
+one.
+
+**What is unconfirmed:**
+- Whether `dhclient -1 -timeout <n>` behaves as assumed on the actual Debian
+  image this ships (exit code semantics, whether the address/route land in
+  time for the immediate `ip -j addr`/`ip -j route` read that follows it).
+- Whether `tcpdump -v`'s decoded text for a DHCP reply actually contains the
+  literal string `"BOOTP/DHCP, Reply"` on the `tcpdump` version this image
+  ships — this was written from documented/typical `tcpdump -v` output, not
+  confirmed against a real capture. If the string doesn't match, every
+  passive listen reads as "nothing heard" — the unsafe direction — which is
+  exactly the risk ADR-023's "must stay true" clause calls out.
+- Whether a `dnsmasq` already running the AP's own `dhcp-range`s for
+  `wlan0`/its VLAN subinterfaces successfully picks up an additional
+  drop-in for an unrelated wired interface via `bind-dynamic` +
+  `systemctl reload`, without disturbing the AP's own DHCP service in any
+  way (ADR-011: `dnsmasq` must never be *restarted* by the daemon, only
+  reloaded, and a reload must not glitch the AP's own leases).
+- Whether the deterministic subnet-third-octet hash
+  (`wifucked.lanout.subnet_third_octet`) ever collides with the AP's own
+  profile subnet(s) or another LAN-out port's subnet in practice — the
+  offset/span constants are chosen to make this unlikely, not proven
+  collision-free for all inputs.
+- **Interacts with backlog item 15** (`docs/backlog/traffic-blockers.md`):
+  a LAN-out port's first-time client hits the exact same "allocator never
+  opens a route on `up_bps`-only demand" gap AP clients already have. This
+  PR's own `MOCK_HW`/scenario testing works around it by driving demand
+  directly (`harness.set_demand`) rather than through a simulated first
+  packet, so it neither confirms nor worsens item 15 — it is a pre-existing,
+  separately-tracked gap that a real LAN-out client would also hit.
+
+**Built-in fallback if it fails:** none beyond `_run`'s existing
+never-raises contract (a failed `dhclient`/`tcpdump`/`systemctl` call logs
+and the pipeline returns the conservative outcome — see
+`LinuxDhcp.passive_listen_for_foreign_server`'s explicit fail-safe `return
+True` on any tool error). Worst case if the `tcpdump` text match is wrong: a
+port that should become a LAN-out server simply never does (safe, if
+useless) — worst case if some other assumption here is wrong in the *other*
+direction is exactly the harm ADR-022's Decision section describes, which
+is why this entry exists rather than being reported as confirmed.
+
+**Next step:** on a real device, plug a USB Ethernet adapter into a port
+with no DHCP server on the far end (a bare switch, or nothing at all) and
+confirm: no lease is obtained, the passive listen correctly reports nothing
+heard, the port becomes a DHCP server, and a laptop plugged into that port
+gets a working Internet connection through the tunnel. Separately, plug an
+adapter into a live LAN with a real DHCP server already on it and confirm
+the passive listen correctly detects it and the port stays inert — this is
+the case that must never fail quietly.
+
+**History:**
+- 2026-08-07 — implemented in response to the product owner's ADR-022
+  follow-up (DHCP-server fallback for bare wired ports); mock-only and
+  scenario-tested (`appliance/tests/test_lanout.py`,
+  `appliance/tests/scenarios/test_lan_out_enforcement.py`), not yet run
+  against real hardware or a real hostile network by anyone.
+
+---
+
 ## Template for new entries
 
 ```markdown
