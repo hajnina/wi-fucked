@@ -583,8 +583,17 @@ TCPDUMP_WG0_PID=$!
 # kernel's own SYN retransmission of one held-open attempt;
 # `--connect-timeout` bounds each attempt so a bad one gives up fast
 # instead of camping on the full ~130s kernel SYN-retry schedule.
-ip netns exec "${CLIENT_NS}" curl -sS --connect-timeout 10 --max-time "${CHAOS_DURATION_S}" \
-    --retry 999 --retry-delay 3 --retry-all-errors --retry-connrefused \
+# `timeout`, not just curl's own `--max-time`, wraps the whole thing: relying
+# on `--max-time` alone to bound `--retry` hung an entire prior CI run past
+# the host's 1500s hard timeout (the guest never got to `finish()` at all) —
+# whatever the exact interaction was, a hard OS-level kill is the only thing
+# that can't silently not-apply. `--retry 40` (not `curl`'s own unbounded-ish
+# defaults) at `--retry-delay 3` covers the whole chaos window comfortably
+# without depending on `--max-time` to be the only thing standing between one
+# retry policy and a hung guest.
+timeout "$((CHAOS_DURATION_S + 15))" ip netns exec "${CLIENT_NS}" curl -sS \
+    --connect-timeout 10 --max-time "${CHAOS_DURATION_S}" \
+    --retry 40 --retry-delay 3 --retry-all-errors --retry-connrefused \
     -o "${DOWNLOAD_FILE}" "${INTERNET_URL}" > "${DOWNLOAD_LOG}" 2>&1 &
 DOWNLOAD_PID=$!
 
