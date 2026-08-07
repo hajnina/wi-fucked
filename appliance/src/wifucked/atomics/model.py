@@ -31,6 +31,28 @@ class Kind(enum.StrEnum):
     CELLULAR = "cellular"
 
 
+class PortRole(enum.StrEnum):
+    """What a wired/USB-Ethernet port turned out to *be*, not what it's
+    permitted to do (that's ``Mode``).
+
+    Deliberately orthogonal to ``Mode`` rather than folded into it: ``Mode``
+    is "what the user has permitted", ``PortRole`` is "what the DHCP-attempt
+    -> passive-listen pipeline (see ``wifucked.lanout``, ADR-023) discovered
+    this physical port to be" — a fact about the network the port is plugged
+    into, not a permission. Every atomic starts ``WAN`` (the existing default,
+    ADR-022) whether or not it is wired; only a wired ``Kind`` (``USB_ETHERNET``
+    / ``ETHERNET``) that fails to get a DHCP lease and hears no foreign DHCP
+    server on its segment is ever reclassified to ``LAN_OUT``.
+    """
+
+    #: An upstream WAN source, or not yet determined to be otherwise.
+    WAN = "wan"
+    #: This port switched into DHCP-server mode and hands out stabilized
+    #: internet to whatever is plugged into it, the same way the AP does for
+    #: its LAN clients (ADR-019).
+    LAN_OUT = "lan_out"
+
+
 class Health(enum.StrEnum):
     #: Carrying traffic, meeting expectations.
     GOOD = "good"
@@ -101,6 +123,11 @@ class Atomic:
     label: str
     mode: Mode = Mode.UNUSED
     health: Health = Health.UNKNOWN
+    #: What this port turned out to be (ADR-023). Only ever ``LAN_OUT`` for a
+    #: wired port the DHCP-attempt/passive-listen pipeline classified as
+    #: having no upstream and no competing DHCP server. Not identity — never
+    #: compared or persisted as a substitute for ``id`` (ADR-002).
+    role: PortRole = PortRole.WAN
     capacity: Capacity = field(default_factory=Capacity)
     quality: Quality = field(default_factory=Quality)
     cost: Cost = field(default_factory=Cost)
@@ -123,9 +150,17 @@ class Atomic:
 
     @property
     def usable(self) -> bool:
-        """Present, permitted, and actually passing traffic."""
+        """Present, permitted, and actually passing traffic.
+
+        A ``LAN_OUT`` port is never a WAN pool member (ADR-023) — it serves
+        DHCP outward rather than carrying traffic upstream, and belongs in
+        `Registry.lan_out_atomics()` instead. Its `mode` is always kept at
+        `UNUSED` by the classifier that assigns the role, so this check is
+        belt-and-suspenders, not the only thing enforcing it.
+        """
         return (
             self.present
+            and self.role is PortRole.WAN
             and self.mode is not Mode.UNUSED
             and self.health in (Health.GOOD, Health.DEGRADED)
         )
@@ -143,6 +178,7 @@ class Atomic:
             "kind": str(self.kind),
             "label": self.label,
             "mode": str(self.mode),
+            "role": str(self.role),
             "health": str(self.health),
             "present": self.present,
             "ifname": self.ifname,

@@ -6,6 +6,7 @@ import os
 
 from wifucked.hal.base import (
     ApStatus,
+    DhcpLease,
     Hal,
     RadioCapabilities,
     ScannedNetwork,
@@ -16,6 +17,7 @@ from wifucked.hal.base import (
 
 __all__ = [
     "ApStatus",
+    "DhcpLease",
     "Hal",
     "RadioCapabilities",
     "ScannedNetwork",
