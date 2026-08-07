@@ -260,7 +260,13 @@ t0="$(now)"
 systemctl restart systemd-networkd
 systemctl restart hostapd
 systemctl restart dnsmasq
-systemctl start wifucked.service
+# wifucked.service deliberately does NOT start here yet: its real Flask app
+# binds specifically to ${GATEWAY} (config.api_host, never 0.0.0.0), and
+# starting it in the same breath as systemd-networkd races the address
+# actually landing on wlan0 -- confirmed in a real CI run ("Cannot assign
+# requested address", crash-looping under Restart=always until the address
+# happened to appear first). Start it only once 08_gateway_address below has
+# confirmed the real address is actually there.
 
 HOSTAPD_UP=0
 for _ in $(seq 1 "${TIMEOUT_S}"); do
@@ -296,6 +302,8 @@ if [ "${GW_UP}" != "1" ]; then
     finish 1
 fi
 fragment "08_gateway_address" pass "${t0}" "wlan0 has ${GATEWAY} via real systemd-networkd"
+
+systemctl start wifucked.service
 
 t0="$(now)"
 API_TOKEN=""
