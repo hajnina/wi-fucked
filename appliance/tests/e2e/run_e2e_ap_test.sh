@@ -220,6 +220,22 @@ tcpdump -i any -nn -w "${WORKDIR}/capture.pcap" \
     > "${WORKDIR}/tcpdump.log" 2>&1 &
 TCPDUMP_PID=$!
 
+# capture.pcap coming back empty (zero packets, on any interface, for the
+# whole run) on the previous run means the decrypted plaintext packet never
+# reaches the network stack's normal receive path at all — tcpdump hooks in
+# before netfilter, so a drop invisible to it and to iptables/nft/conntrack
+# alike is almost certainly happening *inside* the WireGuard driver itself,
+# before wg_packet_consume_data_done() hands the packet to netif_rx(). The
+# most likely candidate at that stage is the allowed-ips *source* check
+# (wg_allowedips_lookup_src) silently rejecting the decrypted packet's
+# source address — which is a different check from the crypto-routing that
+# already-live counters (`wg show ... transfer`) reflect, since WireGuard's
+# rx byte accounting happens at successful decrypt, before this check runs.
+# Turn on the kernel module's own dynamic debug logging so a real rejection
+# prints directly to dmesg instead of staying a hypothesis. No-op (silently)
+# if this kernel wasn't built with CONFIG_DYNAMIC_DEBUG.
+echo "module wireguard +p" > /sys/kernel/debug/dynamic_debug/control 2>&1 || true
+
 # --- the real fabric: real Flask app, real WireGuard, real NAT -------------
 #
 # Runs directly on this host (root, for NET_ADMIN — the whole script is
@@ -437,8 +453,10 @@ tcpdump -r "${WORKDIR}/capture.pcap" -nn -vvv > "${RESULTS_DIR}/capture.txt" 2>&
     done
     echo "== host per-interface rp_filter (fabric side, not just the guest) =="
     for f in /proc/sys/net/ipv4/conf/*/rp_filter; do echo "${f}=$(cat "${f}" 2>&1)"; done
+    echo "== wireguard kernel module dynamic debug output (dropped/rejected packets, if the kernel supports it) =="
+    dmesg 2>&1 | grep -i wireguard
     echo "== recent kernel drop-relevant log lines (martian, filter, etc.) =="
-    dmesg 2>&1 | tail -60
+    dmesg 2>&1 | tail -100
 } > "${RESULTS_DIR}/fabric-host-diagnostics.log" 2>&1 || true
 
 # --- extract results ---------------------------------------------------------
