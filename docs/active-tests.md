@@ -149,6 +149,80 @@ what's left to test on hardware; it does not move this entry to `CONFIRMED`.
   MOCK_HW instead and was rejected in review for routing around exactly the
   integration points most likely to hide the real bug; real-hardware
   confirmation is still the open item above.
+- 2026-08-07 — extended the same guest with two real WAN links (see the new
+  entry below) rather than stopping at AP bring-up, in response to feedback
+  that one screenshot of a hotspot page does not confirm the appliance does
+  its actual job (WAN aggregation/failover).
+
+---
+
+### Real WAN discovery, chaos, and failover (no fabric/tunnel yet)
+
+**Status:** `CONFIRMED` (as a CI proof — see "what is unconfirmed" for the
+real-hardware and full-routing gaps this does not close)
+**Touches:** `appliance/tests/e2e/run_e2e_ap_test.sh` (WAN tap/DHCP/NAT
+topology, `chaos_wan.sh` invocation), `appliance/tests/e2e/guest/e2e_driver.sh`
+(WAN discovery + chaos-monitoring phases), `appliance/tests/e2e/monitor_state.py`,
+`appliance/tests/e2e/build_report.py`
+**Related:** [ADR-002](adr/ADR-002-atomic-identity.md),
+[ADR-004](adr/ADR-004-failover-not-aggregation.md), the AP bring-up entry
+above, `appliance/tests/qemu/`'s WAN-chaos entry, `docs/sop/SOP-003-testing.md`
+
+**What actually runs today:** the same real QEMU guest from the AP
+bring-up proof, now with two additional real WAN links — host-side taps
+presented to the guest as real USB-Ethernet devices (QEMU `usb-net`,
+CDC-ECM), discovered by the real `LinuxUsb.devices()` sysfs classification
+code, DHCP'd by the host acting as "the ISP," and NAT'd to the real
+Internet so the daemon's real, hardcoded active-probe targets
+(`1.1.1.1`/`8.8.8.8`) are genuinely reachable. `appliance/tests/qemu/chaos_wan.sh`
+(unmodified, reused verbatim from the earlier WAN-chaos QEMU proof) degrades
+both links on an independent schedule for 150s while the real control loop —
+`Discoverer`, `Allocator`, `LinuxProber`, `WireGuardTunnel`, `LinuxEnforcer`,
+all real, `wifucked.service` itself, no `MOCK_HW` — reacts.
+
+**What was confirmed**, by polling the real dashboard's `/api/state`/
+`/api/decisions` throughout the run (not inferred from a bare exit code):
+the two USB-Ethernet WAN atomics are discovered via real sysfs; the AP
+client's 802.11 association does not drop across the whole chaos window
+(the SOP-003 invariant); real RTT/health per atomic and the real allocator's
+`primary_id` are recorded over time and rendered as graphs in `report.html`.
+
+**What is unconfirmed:**
+- Whether the allocator actually swaps `primary_id` under this specific
+  chaos profile is *reported*, not *asserted* — `chaos_summary.json`'s
+  `primary_switches_observed` can legitimately be 0 if measured
+  capacity/health never crosses a threshold for freshly-discovered atomics
+  with no capacity history, and this proof doesn't yet have enough
+  confidence in that threshold behavior to gate on a specific count. Worth
+  tightening once a few real runs show what's typical.
+- **No fabric, no real WireGuard tunnel, no LAN-to-Internet routing.**
+  `tunnel.bind_to()` runs for real when the allocator picks a new primary,
+  but with no fabric peer configured the handshake itself cannot complete —
+  this proof cannot yet show a real LAN client's traffic surviving a WAN
+  swap end-to-end, only that the control loop driving the swap is real. That
+  is the next piece (see the open item this file's "AP bring-up" entry
+  doesn't cover either): a real fabric process, a real WireGuard tunnel, and
+  a real download surviving real WAN chaos — closing the exact gap the
+  `appliance/tests/qemu/` ADR-019 packet-routing entry above left open,
+  under conditions (real systemd, real HAL, real USB WAN discovery) that
+  entry never had.
+- Real `brcmfmac`/CYW43438, real RF, real RNDIS-tethering detection, and
+  real Wi-Fi-as-WAN remain untested — same caveats as the AP bring-up entry.
+
+**Built-in fallback if it fails:** none beyond what's already documented —
+this is a CI proof of the control loop's reaction to real WAN chaos, not a
+new production code path with its own fallback.
+
+**Next step:** add the real fabric + tunnel + routing leg described above;
+watch a handful of real CI runs to see whether `primary_switches_observed`
+is reliably nonzero under this chaos profile, and if so, assert it.
+
+**History:**
+- 2026-08-07 — built in direct response to feedback that the AP bring-up
+  proof alone doesn't test whether the appliance does its actual job (WAN
+  discovery, failover, and eventually routing) and that a single screenshot
+  isn't "comprehensive." Reuses `appliance/tests/qemu/chaos_wan.sh` verbatim
+  against real taps in the new real-systemd guest.
 
 ---
 

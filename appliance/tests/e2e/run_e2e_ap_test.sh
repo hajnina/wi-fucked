@@ -20,9 +20,21 @@
 # systemd-networkd apply it, and ran the daemon under MOCK_HW=1. All three of
 # those are gone here — see README.md's "what changed and why."
 #
+# Also stands up two real WAN links: `tap-wan1`/`tap-wan2`, host-side taps
+# presented to the guest as real USB-Ethernet devices (QEMU `usb-net`, CDC-ECM
+# — the real `LinuxUsb.devices()` sysfs classification code discovers these
+# for real, no fixture, no fake). The host acts as the "ISP" for each (DHCP +
+# NAT to the real Internet, so the daemon's real, hardcoded probe targets —
+# 1.1.1.1/8.8.8.8 — are genuinely reachable) and degrades them on an
+# independent schedule with `appliance/tests/qemu/chaos_wan.sh` while the
+# real control loop (Discoverer, Allocator, LinuxProber, WireGuardTunnel,
+# LinuxEnforcer — all real, `wifucked.service` unmodified) reacts, so this
+# proves real WAN failover, not just AP bring-up. See README.md.
+#
 # Requires root (QEMU networking is fine unprivileged, but network
-# namespaces on the host build the input images) plus qemu-system-x86_64,
-# genisoimage, mkfs.vfat (dosfstools), and mtools. See README.md.
+# namespaces/bridges/taps on the host build the topology) plus
+# qemu-system-x86_64, genisoimage, mkfs.vfat (dosfstools), mtools, dnsmasq,
+# and iptables. See README.md.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,8 +44,15 @@ RESULTS_DIR="${1:-${REPO_ROOT}/e2e-artifacts}"
 mkdir -p "${RESULTS_DIR}"
 
 WORKDIR="$(mktemp -d /tmp/wifucked-e2e-qemu.XXXXXX)"
-QEMU_TIMEOUT_S="${WIFUCKED_E2E_TIMEOUT_S:-1200}"
+QEMU_TIMEOUT_S="${WIFUCKED_E2E_TIMEOUT_S:-1500}"
 export MTOOLS_SKIP_CHECK=1
+
+# Must match guest/e2e_driver.sh's own CHAOS_DURATION_S — there is no kernel
+# cmdline to pass it through with a full-disk (not -kernel/-append) boot, so
+# it is a constant in both places rather than threaded through.
+CHAOS_DURATION_S=150
+WAN1_SUBNET="10.77.1"
+WAN2_SUBNET="10.77.2"
 
 log() { printf '[e2e-host] %s\n' "$1"; }
 
@@ -43,13 +62,65 @@ cleanup() {
         log "qemu still running at cleanup; killing pid ${QEMU_PID}"
         kill -9 "${QEMU_PID}" 2> /dev/null || true
     fi
+    if [ -n "${CHAOS_PID:-}" ] && kill -0 "${CHAOS_PID}" 2> /dev/null; then
+        kill -9 "${CHAOS_PID}" 2> /dev/null || true
+    fi
+    [ -n "${DNSMASQ_WAN1_PID:-}" ] && kill "${DNSMASQ_WAN1_PID}" 2> /dev/null || true
+    [ -n "${DNSMASQ_WAN2_PID:-}" ] && kill "${DNSMASQ_WAN2_PID}" 2> /dev/null || true
+    iptables -t nat -D POSTROUTING -s "${WAN1_SUBNET}.0/24" -o "${DEFAULT_IFACE:-eth0}" -j MASQUERADE 2> /dev/null || true
+    iptables -t nat -D POSTROUTING -s "${WAN2_SUBNET}.0/24" -o "${DEFAULT_IFACE:-eth0}" -j MASQUERADE 2> /dev/null || true
+    ip link del tap-wan1 2> /dev/null || true
+    ip link del tap-wan2 2> /dev/null || true
+    ip link del br-wan1 2> /dev/null || true
+    ip link del br-wan2 2> /dev/null || true
     rm -rf "${WORKDIR}"
 }
 trap cleanup EXIT
 
-for bin in qemu-system-x86_64 genisoimage mkfs.vfat mcopy curl qemu-img; do
+for bin in qemu-system-x86_64 genisoimage mkfs.vfat mcopy curl qemu-img dnsmasq iptables; do
     command -v "${bin}" > /dev/null || { echo "FATAL: ${bin} not installed" >&2; exit 1; }
 done
+
+# --- WAN topology: two host-shaped taps, presented as real USB-Ethernet ----
+
+log "building WAN topology (2 taps, DHCP, NAT to the real Internet)"
+ip link add br-wan1 type bridge
+ip link add br-wan2 type bridge
+ip addr add "${WAN1_SUBNET}.1/24" dev br-wan1
+ip addr add "${WAN2_SUBNET}.1/24" dev br-wan2
+ip link set br-wan1 up
+ip link set br-wan2 up
+ip tuntap add dev tap-wan1 mode tap
+ip tuntap add dev tap-wan2 mode tap
+ip link set tap-wan1 master br-wan1
+ip link set tap-wan2 master br-wan2
+ip link set tap-wan1 up
+ip link set tap-wan2 up
+
+# DHCP-only (--port=0 disables its own DNS resolver) — the host plays "the
+# ISP" for each simulated WAN, same as a real tethered phone or USB Ethernet
+# dongle would hand out an address and a gateway.
+dnsmasq --interface=br-wan1 --bind-interfaces --except-interface=lo --port=0 \
+    --dhcp-range="${WAN1_SUBNET}.50,${WAN1_SUBNET}.100,12h" \
+    --dhcp-option="option:router,${WAN1_SUBNET}.1" \
+    --pid-file="${WORKDIR}/dnsmasq-wan1.pid" --log-facility="${WORKDIR}/dnsmasq-wan1.log"
+sleep 1
+DNSMASQ_WAN1_PID="$(cat "${WORKDIR}/dnsmasq-wan1.pid" 2> /dev/null || true)"
+dnsmasq --interface=br-wan2 --bind-interfaces --except-interface=lo --port=0 \
+    --dhcp-range="${WAN2_SUBNET}.50,${WAN2_SUBNET}.100,12h" \
+    --dhcp-option="option:router,${WAN2_SUBNET}.1" \
+    --pid-file="${WORKDIR}/dnsmasq-wan2.pid" --log-facility="${WORKDIR}/dnsmasq-wan2.log"
+sleep 1
+DNSMASQ_WAN2_PID="$(cat "${WORKDIR}/dnsmasq-wan2.pid" 2> /dev/null || true)"
+
+# The daemon's real active prober pings real 1.1.1.1/8.8.8.8 (hardcoded,
+# appliance/src/wifucked/probe/__init__.py) — NAT both WAN subnets to the
+# runner's own real Internet egress so those probes are genuinely real,
+# rather than overriding the probe targets to fit a synthetic topology.
+sysctl -w net.ipv4.ip_forward=1 > /dev/null
+DEFAULT_IFACE="$(ip route show default | awk '{print $5; exit}')"
+iptables -t nat -A POSTROUTING -s "${WAN1_SUBNET}.0/24" -o "${DEFAULT_IFACE}" -j MASQUERADE
+iptables -t nat -A POSTROUTING -s "${WAN2_SUBNET}.0/24" -o "${DEFAULT_IFACE}" -j MASQUERADE
 
 # --- base image (cached) -----------------------------------------------------
 
@@ -108,10 +179,25 @@ qemu-system-x86_64 \
     -drive file="${WORKDIR}/repo.iso",media=cdrom,if=ide \
     -drive file="${WORKDIR}/results.img",if=virtio,format=raw \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
+    -netdev tap,id=wan1net,ifname=tap-wan1,script=no,downscript=no \
+    -netdev tap,id=wan2net,ifname=tap-wan2,script=no,downscript=no \
+    -device qemu-xhci,id=usbbus \
+    -device usb-net,bus=usbbus.0,netdev=wan1net \
+    -device usb-net,bus=usbbus.0,netdev=wan2net \
     -display none -serial "file:${WORKDIR}/console.log" -monitor none \
     -no-reboot \
     > "${WORKDIR}/qemu.log" 2>&1 &
 QEMU_PID=$!
+
+# Chaos starts as soon as the guest does and runs for CHAOS_DURATION_S; the
+# guest doesn't reach its own WAN-chaos monitoring phase until well after
+# hostapd/dashboard bring-up (~30-60s in), so the first stretch of chaos
+# output lands before anything is watching it, which is fine — the schedule
+# is a fixed, repeating cycle (chaos_wan.sh), not a one-shot triggered by the
+# guest's readiness.
+"${REPO_ROOT}/appliance/tests/qemu/chaos_wan.sh" tap-wan1 tap-wan2 "${CHAOS_DURATION_S}" \
+    "${WORKDIR}/chaos_wan.log" &
+CHAOS_PID=$!
 
 # A guest-initiated ACPI poweroff does not reliably make the qemu *process*
 # itself exit in every environment this has been observed to run in (the
@@ -149,7 +235,14 @@ fi
 wait "${QEMU_PID}" 2> /dev/null || true
 log "qemu exited after ~${WAITED}s (guest DONE at ~${DONE_AT:-never}s)"
 
+if kill -0 "${CHAOS_PID}" 2> /dev/null; then
+    kill "${CHAOS_PID}" 2> /dev/null || true
+fi
+wait "${CHAOS_PID}" 2> /dev/null || true
+
 cp -f "${WORKDIR}/console.log" "${RESULTS_DIR}/console.log" 2> /dev/null || true
+cp -f "${WORKDIR}/chaos_wan.log" "${RESULTS_DIR}/chaos_wan.log" 2> /dev/null || true
+cp -f "${WORKDIR}"/dnsmasq-wan*.log "${RESULTS_DIR}/" 2> /dev/null || true
 
 # --- extract results ---------------------------------------------------------
 
@@ -178,13 +271,29 @@ python3 "${HERE}/aggregate_report.py" \
     --fragments-dir "${RESULTS_DIR}/fragments" --out-dir "${RESULTS_DIR}"
 REPORT_RC=$?
 
+python3 "${HERE}/build_report.py" --results-dir "${RESULTS_DIR}" || \
+    log "WARNING build_report.py failed; report.md/junit.xml above are still valid"
+
+# This whole script runs under sudo (QEMU networking, taps, iptables) and
+# some of what lands in RESULTS_DIR is written by daemonized root processes
+# (dnsmasq's own --log-facility file, in particular) with restrictive
+# permissions — unreadable by the actions runner's normal, non-root user, so
+# `actions/upload-artifact` fails outright trying to zip it. This isn't
+# sensitive output (see ci.yml's job — none of it is), so make it all
+# world-readable rather than track down each writer's own umask individually.
+chmod -R a+rX "${RESULTS_DIR}" 2> /dev/null || true
+
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    cat "${RESULTS_DIR}/report.md" >> "${GITHUB_STEP_SUMMARY}"
+    {
+        cat "${RESULTS_DIR}/report.md"
+        echo ""
+        echo "Full report with graphs and every screenshot: see the \`report.html\` file in this job's uploaded artifact."
+    } >> "${GITHUB_STEP_SUMMARY}"
 fi
 
 if [ "${REPORT_RC}" != "0" ]; then
-    log "RESULT: FAIL — see ${RESULTS_DIR}/report.md"
+    log "RESULT: FAIL — see ${RESULTS_DIR}/report.md and report.html"
     exit 1
 fi
-log "RESULT: PASS — see ${RESULTS_DIR}/report.md"
+log "RESULT: PASS — see ${RESULTS_DIR}/report.md and report.html"
 exit 0
