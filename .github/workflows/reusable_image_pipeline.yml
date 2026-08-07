@@ -362,6 +362,17 @@ jobs:
           sudo umount "${WORK}/boot"
           sudo losetup -d "${LOOP}"
 
+          # QEMU's raspi3b SD controller emulation requires an exact
+          # power-of-2 image size ("Invalid SD card size: 6 GiB... has to be
+          # a power of 2") — the real published artifact isn't shaped this
+          # way (it's sized to the actual partition contents, not a round
+          # number), so grow a *copy* to 8 GiB rather than touching
+          # `${IMG}` itself, which "Compress and checksum" (next step)
+          # publishes unmodified.
+          BOOT_IMG="${WORK}/boot-test.img"
+          cp --reflink=auto "${IMG}" "${BOOT_IMG}" 2>/dev/null || cp "${IMG}" "${BOOT_IMG}"
+          qemu-img resize -f raw "${BOOT_IMG}" 8G
+
           CONSOLE="${WORK}/console.log"
           touch "${CONSOLE}"
           set +e
@@ -369,7 +380,7 @@ jobs:
             -M raspi3b -m 1024 -smp 4 \
             -kernel "${WORK}/kernel8.img" -dtb "${WORK}/board.dtb" \
             -append "console=ttyAMA0 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait rw" \
-            -drive file="${IMG}",format=raw,if=sd \
+            -drive file="${BOOT_IMG}",format=raw,if=sd \
             -serial file:"${CONSOLE}" -display none -no-reboot
           QEMU_RC=$?
           set -e
