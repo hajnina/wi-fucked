@@ -84,9 +84,11 @@ finish() {
 # --- phase: hwsim + interface naming ----------------------------------------
 
 t0="$(now)"
+modprobe mac80211_hwsim radios=2 2> "${RESULTS}/logs/modprobe-hwsim.log"
 if ! lsmod | grep -q '^mac80211_hwsim'; then
     fragment "01_hwsim_module" fail "${t0}" \
-        "mac80211_hwsim not loaded" "$(lsmod | head -30; echo ---; dmesg | tail -50)"
+        "modprobe mac80211_hwsim radios=2 did not result in the module being loaded — likely missing from this kernel build (see README.md's download_base_image.sh note)" \
+        "$(cat "${RESULTS}/logs/modprobe-hwsim.log"; echo ---; uname -r; echo ---; lsmod | head -30)"
     finish 1
 fi
 mapfile -t WLAN_IFACES < <(iw dev 2> /dev/null | awk '/Interface/ {print $2}' | sort)
