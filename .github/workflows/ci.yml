@@ -116,15 +116,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y hostapd dnsmasq iw isc-dhcp-client
 
-      - name: Install Python dependencies (root, so the netns-exec'd test can use them)
+      # A dedicated venv, not the system python3: Ubuntu 24.04's system python
+      # has Debian-managed packages (e.g. blinker, pulled in as a dependency
+      # of something else) with no pip RECORD metadata, so installing flask
+      # on top of it fails trying to uninstall/upgrade them. The test itself
+      # runs as root (network namespaces), so the venv is built as root too —
+      # both `ip netns exec ... python3` calls in run_e2e_ap_test.sh and this
+      # install step need to agree on the same interpreter.
+      - name: Install Python dependencies into an isolated venv
         run: |
-          sudo python3 -m pip install --break-system-packages --quiet \
+          sudo python3 -m venv /opt/wifucked-e2e-venv
+          sudo /opt/wifucked-e2e-venv/bin/pip install --quiet \
             -r appliance/tests/e2e/requirements.txt
-          sudo python3 -m playwright install --with-deps chromium
+          sudo /opt/wifucked-e2e-venv/bin/playwright install --with-deps chromium
 
       - name: Run the AP + dashboard E2E proof
         run: |
-          sudo env WIFUCKED_E2E_PYTHON=python3 \
+          sudo env WIFUCKED_E2E_PYTHON=/opt/wifucked-e2e-venv/bin/python3 \
             appliance/tests/e2e/run_e2e_ap_test.sh "${GITHUB_WORKSPACE}/e2e-artifacts"
 
       - name: Upload E2E artifacts (report, screenshots, logs)
