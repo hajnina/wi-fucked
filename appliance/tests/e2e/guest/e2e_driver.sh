@@ -131,12 +131,22 @@ ip link set wlan0 up
 # "known deviations from a real device."
 
 # Move the second radio out of the root netns *before* NetworkManager or
-# hostapd can see it at all — it plays the "phone" in this proof.
+# hostapd can see it at all — it plays the "phone" in this proof. A wireless
+# netdev's namespace is a property of its *phy* (cfg80211/nl80211), not the
+# netdev itself — plain `ip link set DEV netns NS` rejects it outright
+# (RTNETLINK "Invalid argument"), confirmed by this test's own first CI run.
+# `iw phy PHY set netns` is the only way to move it, which needs `iw`
+# installed a little earlier than setup_rpi.sh would otherwise install it —
+# test-harness-only: a real device has exactly one radio and never needs to
+# relocate a second one.
+apt-get install -y -qq iw > /dev/null
+CLIENT_PHY="$(cat "/sys/class/net/${CLIENT_RAW}/phy80211/name")"
 ip netns add "${CLIENT_NS}"
-ip link set "${CLIENT_RAW}" netns "${CLIENT_NS}"
+iw phy "${CLIENT_PHY}" set netns name "${CLIENT_NS}"
 ip netns exec "${CLIENT_NS}" ip link set lo up
 ip netns exec "${CLIENT_NS}" ip link set "${CLIENT_RAW}" up
-fragment "02_iface_split" pass "${t0}" "ap=wlan0 (was ${AP_RAW}), client=${CLIENT_RAW} in netns ${CLIENT_NS}"
+fragment "02_iface_split" pass "${t0}" \
+    "ap=wlan0 (was ${AP_RAW}), client=${CLIENT_RAW}/${CLIENT_PHY} in netns ${CLIENT_NS}"
 
 # --- phase: real provisioning (the actual image-bake script) ---------------
 
