@@ -440,6 +440,37 @@ imposed don't apply and a real `tcpdump` can watch the packet directly.
   independent of the ADR-019 design itself. The final round-trip was not
   achieved; every other claim above was independently confirmed against
   live kernel state, not inferred.
+- 2026-08-07 — the real fabric/tunnel e2e proof (PR #48,
+  `18_tunnel_download_survives_chaos`) hit the identical symptom this
+  entry's QEMU proof left unresolved: a live WireGuard handshake, a
+  correct `ip route get` resolution to `wg0`, a correct NAT rule — and
+  `internet-httpd.log` (the real HTTP server standing in for "the
+  Internet") receiving zero requests for the full run (backlog item 16).
+  Root-caused, not just re-observed: GitHub-hosted runners have `dockerd`
+  running by default, and `dockerd` sets the host's `FORWARD` chain policy
+  to `DROP` the moment it enables IP forwarding for its own bridge
+  networks (moby/moby#50566, Debian bug #865975) — independent of
+  anything this test does, and invisible to every check the earlier QEMU
+  proof ran (`ip route get`, `allowed-ips`, `nft list ruleset` all inspect
+  routing/NAT/crypto state, none of them inspect a *separate* netfilter
+  hook's filtering policy). This explains why the QEMU proof's "artifact
+  of the sandbox" hypothesis was half right: the sandbox-specific gap
+  wasn't `AF_PACKET`/`tcpdump` availability, it was a Docker-managed host
+  firewall default neither proof was built to check for. Confirms this is
+  a real, environment-triggered gap, not an ADR-019 design defect — fixed
+  for the CI harness in the same PR (explicit `iptables -I FORWARD`
+  accepts for `wg0`/`veth-inet`/`tap-wan1`/`tap-wan2`, inserted into the
+  same chain `dockerd` set the policy on, not a competing chain — a
+  competing chain's `accept` does not override another chain's `drop` for
+  the same packet at the same netfilter hook). **Still open:** whether
+  production deployments of the fabric hit the same gap depends on how
+  it's actually run (a `--network host` container, or colocated with
+  another Docker workload on the same box, would; a container on its own
+  bridge network generally wouldn't, since Docker's own per-container
+  rules already permit that traffic) — that's a deployment-configuration
+  question, not something this CI-harness-scoped fix resolves, and needs
+  its own decision before shipping if the fabric's real deployment story
+  involves host networking.
 
 ### Interim single-hotspot default (ADR-020)
 

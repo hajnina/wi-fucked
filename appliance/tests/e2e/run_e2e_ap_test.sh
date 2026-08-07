@@ -93,6 +93,10 @@ cleanup() {
     [ -n "${INTERNET_HTTPD_PID:-}" ] && kill "${INTERNET_HTTPD_PID}" 2> /dev/null || true
     iptables -t nat -D POSTROUTING -s "${WAN1_SUBNET}.0/24" -o "${DEFAULT_IFACE:-eth0}" -j MASQUERADE 2> /dev/null || true
     iptables -t nat -D POSTROUTING -s "${WAN2_SUBNET}.0/24" -o "${DEFAULT_IFACE:-eth0}" -j MASQUERADE 2> /dev/null || true
+    for fwd_if in wg0 veth-inet tap-wan1 tap-wan2; do
+        iptables -D FORWARD -i "${fwd_if}" -j ACCEPT 2> /dev/null || true
+        iptables -D FORWARD -o "${fwd_if}" -j ACCEPT 2> /dev/null || true
+    done
     ip link del tap-wan1 2> /dev/null || true
     ip link del tap-wan2 2> /dev/null || true
     ip link del br-wan1 2> /dev/null || true
@@ -148,6 +152,28 @@ sysctl -w net.ipv4.ip_forward=1 > /dev/null
 DEFAULT_IFACE="$(ip route show default | awk '{print $5; exit}')"
 iptables -t nat -A POSTROUTING -s "${WAN1_SUBNET}.0/24" -o "${DEFAULT_IFACE}" -j MASQUERADE
 iptables -t nat -A POSTROUTING -s "${WAN2_SUBNET}.0/24" -o "${DEFAULT_IFACE}" -j MASQUERADE
+
+# GitHub-hosted runners have dockerd running by default, and dockerd sets
+# the host's FORWARD chain policy to DROP the moment it enables IP
+# forwarding for its own bridge networks (well-documented upstream:
+# moby/moby#50566, Debian bug #865975) — it does this once at daemon
+# startup, independent of anything this script does. That silently drops
+# every packet this test's own gateway topology needs forwarded: LAN client
+# -> wg0 -> fabric -> the Internet stand-in's netns, and the reply back.
+# `ip_forward=1`, the WireGuard config, and the NAT rule below can all be
+# completely correct and this still eats every packet, because FORWARD
+# filtering is a separate netfilter hook from routing and NAT — this is
+# exactly the failure mode item 16 (docs/backlog/traffic-blockers.md) found:
+# a stable primary WAN, a live WireGuard handshake, zero bytes ever arriving.
+# Insert an explicit accept ahead of whatever set that policy, in the same
+# `filter`/`FORWARD` chain (not a competing chain — a competing chain's
+# ACCEPT does not override another chain's DROP for the same packet, only a
+# rule *inside* the chain that already owns the DROP does), scoped to the
+# interfaces this test's topology actually uses.
+for fwd_if in wg0 veth-inet tap-wan1 tap-wan2; do
+    iptables -I FORWARD 1 -i "${fwd_if}" -j ACCEPT
+    iptables -I FORWARD 1 -o "${fwd_if}" -j ACCEPT
+done
 
 # --- "the Internet" stand-in: reachable only through the fabric's real NAT -
 
