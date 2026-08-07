@@ -707,7 +707,7 @@ if [ "${DOWNLOAD_RC}" -ne 0 ]; then
     FWMARK="$(nft list ruleset 2>&1 | grep -oE 'meta mark set 0x[0-9a-fA-F]+' | head -1 | awk '{print $NF}')"
     fragment "18_tunnel_download_survives_chaos" fail "${t0}" \
         "curl exited ${DOWNLOAD_RC} downloading through the real tunnel during ${CHAOS_DURATION_S}s of real WAN chaos" \
-        "$(cat "${DOWNLOAD_LOG}"); wg: $(wg show 2>&1); nft: $(nft list ruleset 2>&1); ip_rule: $(ip rule show 2>&1); ip_route_tables: $(for t in $(ip rule show 2>&1 | grep -oE 'lookup [0-9]+' | awk '{print $2}' | sort -u); do echo "table ${t}:"; ip route show table "${t}" 2>&1; done); route_get_wg0: $(ip route get 198.51.100.2 mark "${FWMARK:-0x0}" 2>&1); rp_filter: $(for f in /proc/sys/net/ipv4/conf/*/rp_filter; do echo "${f}=$(cat "${f}" 2>&1)"; done)"
+        "$(cat "${DOWNLOAD_LOG}"); wg: $(wg show 2>&1); nft: $(nft list ruleset 2>&1); ip_rule: $(ip rule show 2>&1); ip_route_tables: $(for t in $(ip rule show 2>&1 | grep -oE 'lookup [0-9]+' | awk '{print $2}' | sort -u); do echo "table ${t}:"; ip route show table "${t}" 2>&1; done); route_get_wg0: $(ip route get 198.51.100.2 mark "${FWMARK:-0x0}" 2>&1); rp_filter: $(for f in /proc/sys/net/ipv4/conf/*/rp_filter; do echo "${f}=$(cat "${f}" 2>&1)"; done); forwarding: $(for f in /proc/sys/net/ipv4/conf/all/forwarding /proc/sys/net/ipv4/conf/default/forwarding /proc/sys/net/ipv4/conf/wlan0/forwarding /proc/sys/net/ipv4/conf/wg0/forwarding; do echo "${f}=$(cat "${f}" 2>&1)"; done); sysctl_d: $(cat /etc/sysctl.d/90-wifucked.conf 2>&1)"
     # ip_rule/ip_route_tables above answers *whether* render() ever installed
     # a policy route; this answers *why not* — item 15's fix made ceiling_bps
     # depend on real demand (max(up_bps, down_bps)), so if it's still 0 the
