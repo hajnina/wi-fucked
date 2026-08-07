@@ -667,4 +667,18 @@ class WireGuardTunnel(Tunnel):
             return False
         _run(["ip", "address", "add", local_address, "dev", self._interface])
         _run(["ip", "link", "set", "up", "dev", self._interface])
+        # A real e2e run (docs/backlog/traffic-blockers.md item 16) found
+        # forwarding off at runtime despite setup_rpi.sh's own sysctl.d file
+        # containing the right values — whatever applies /etc/sysctl.d/ at
+        # boot did not reliably do so here. Reconciliation, not assumption
+        # (ADR-007): ensure forwarding directly, every time this runs,
+        # instead of trusting a boot-time file to have taken effect. Setting
+        # the per-interface value explicitly (not just `ip_forward`/
+        # `conf.all.forwarding`) also sidesteps the ordering problem
+        # `conf.default.forwarding` has — that one only seeds interfaces
+        # created *after* it's set, and `wg0` was just created above.
+        # Matches `FabricWireGuard._enable_forwarding_and_nat()`'s identical
+        # pattern on the fabric side of this same tunnel.
+        _run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
+        _run(["sysctl", "-w", f"net.ipv4.conf.{self._interface}.forwarding=1"])
         return True
