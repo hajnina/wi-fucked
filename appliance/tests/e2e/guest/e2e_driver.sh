@@ -72,6 +72,13 @@ dump_diagnostics() {
         done
         echo "== real /api/state =="
         curl -s -u "wifucked:${API_TOKEN:-}" "http://${GATEWAY}:8080/api/state" 2>&1
+        echo "== real wg show =="
+        wg show 2>&1
+        echo "== real nft ruleset =="
+        nft list ruleset 2>&1
+        echo "== real ip rule / ip route table 888 =="
+        ip rule show 2>&1
+        ip route show table 888 2>&1
     } > "${RESULTS}/logs/diagnostics.txt" 2>&1
 }
 
@@ -256,6 +263,27 @@ fi
 SSID="$(grep -m1 '^ssid=' /etc/hostapd/hostapd.conf | cut -d= -f2-)"
 fragment "06_firstboot" pass "${t0}" "real firstboot.sh generated identity, ssid=${SSID}"
 
+# The daemon's real one-shot fabric attach (Daemon.start() -> _attach_fabric_once())
+# only ever tries once, so config.json needs the real fabric's address before
+# wifucked.service's *first* start — not writeable later and expected to
+# retroactively take effect. Same reasoning for /etc/wifucked-release: fabric
+# refuses an appliance below its own MIN_APPLIANCE_VERSION (0.1.0), and this
+# guest never runs the real image-bake step that writes that file on a real
+# device, so it starts as "0.0.0-dev" (config.py's release_info() fallback)
+# unless something here provides a real one. Both are test-harness-only
+# setup standing in for what a real device's provisioning already gives it.
+FABRIC_CFG="${REPO}/e2e-fabric-config.json"
+python3 -c "
+import json
+cfg = json.load(open('${FABRIC_CFG}'))
+out = {'fabric': {'servers': [cfg['fabric_url']], 'username': cfg['fabric_username'], 'password': cfg['fabric_password']}}
+json.dump(out, open('/var/lib/wifucked/config.json', 'w'), indent=2)
+"
+cat > /etc/wifucked-release << 'EOF'
+WIFUCKED_VERSION="0.1.0"
+WIFUCKED_CHANNEL="e2e-test"
+EOF
+
 t0="$(now)"
 systemctl restart systemd-networkd
 systemctl restart hostapd
@@ -411,6 +439,56 @@ if [ "${WAN_PRESENT}" != "1" ]; then
 fi
 fragment "14_wan_discovery" pass "${t0}" "${COUNT} WAN atomics discovered via real USB sysfs"
 
+# --- phase: promote both WAN atomics, exactly as a user would on first setup
+#
+# Discovery never decides what to use on its own — "a newly discovered
+# connection is always UNUSED until they say otherwise"
+# (wifucked.discovery's own docstring). A real user does this once, from the
+# dashboard, the first time they see a new connection; this calls the same
+# real POST /api/atomics/<id>/mode endpoint that button hits. Without this
+# step the allocator has nothing to allocate and the rest of this proof
+# (WAN failover, the tunnel actually binding to a WAN, a download surviving
+# chaos) would silently test nothing — exactly what the first real run of
+# this stage showed happening.
+
+t0="$(now)"
+WAN_IDS="$(curl -s -u "wifucked:${API_TOKEN}" "http://${GATEWAY}:8080/api/state" \
+    | python3 -c 'import json,sys; print("\n".join(a["id"] for a in json.load(sys.stdin)["atomics"] if a["kind"] == "usb_ethernet"))' 2> /dev/null)"
+PROMOTE_FAILED=0
+while IFS= read -r atomic_id; do
+    [ -z "${atomic_id}" ] && continue
+    STATUS="$(curl -s -o /dev/null -w '%{http_code}' -u "wifucked:${API_TOKEN}" \
+        -X POST -H 'Content-Type: application/json' -d '{"mode":"normal"}' \
+        "http://${GATEWAY}:8080/api/atomics/${atomic_id}/mode")"
+    if [ "${STATUS}" != "200" ]; then
+        PROMOTE_FAILED=1
+        echo "wifucked-e2e: failed to promote ${atomic_id}, http ${STATUS}" >> "${RESULTS}/logs/driver.log"
+    fi
+done <<< "${WAN_IDS}"
+if [ "${PROMOTE_FAILED}" != "0" ] || [ -z "${WAN_IDS}" ]; then
+    fragment "15_promote_wans" fail "${t0}" "could not promote one or more real WAN atomics to NORMAL via the real API" \
+        "ids: ${WAN_IDS}"
+    finish 1
+fi
+
+TUNNEL_UP=0
+for _ in $(seq 1 "${TIMEOUT_S}"); do
+    TSTATE="$(curl -s -u "wifucked:${API_TOKEN}" "http://${GATEWAY}:8080/api/state" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["tunnel"]["state"])' 2> /dev/null)"
+    if [ "${TSTATE}" = "connected" ]; then
+        TUNNEL_UP=1
+        break
+    fi
+    sleep 1
+done
+if [ "${TUNNEL_UP}" != "1" ]; then
+    fragment "15_promote_wans" fail "${t0}" \
+        "real WireGuardTunnel never reached tunnel.state=connected within ${TIMEOUT_S}s of promoting real WAN atomics (last seen: ${TSTATE:-none})" \
+        "$(journalctl -u wifucked --no-pager -n 150); wg: $(wg show 2>&1)"
+    finish 1
+fi
+fragment "15_promote_wans" pass "${t0}" "promoted ${WAN_IDS//$'\n'/,} to NORMAL; real tunnel.state=connected"
+
 # --- phase: real WAN chaos — the actual control loop reacting live ---------
 #
 # CHAOS_DURATION_S must match run_e2e_ap_test.sh's own constant of the same
@@ -438,6 +516,20 @@ ASSOC_LOG="${RESULTS}/logs/client_association_during_chaos.log"
     done
 ) &
 ASSOC_WATCH_PID=$!
+
+# The actual point of this whole test: a real LAN client's real download,
+# through the real nft-marked route to wg0, the real WireGuard tunnel, the
+# real fabric's real NAT, to a real HTTP server standing in for "the
+# Internet" that is reachable *no other way* — started now so it runs the
+# entire chaos window, the same real WAN swaps 16_ap_never_drops and
+# 17_wan_failover_observed are watching, not a quiet moment before or after.
+INTERNET_URL="$(python3 -c "import json; print(json.load(open('${FABRIC_CFG}'))['internet_url'])")"
+EXPECTED_SHA256="$(python3 -c "import json; print(json.load(open('${FABRIC_CFG}'))['payload_sha256'])")"
+DOWNLOAD_FILE="${RESULTS}/downloaded_payload.bin"
+DOWNLOAD_LOG="${RESULTS}/logs/download_through_tunnel.log"
+ip netns exec "${CLIENT_NS}" curl -sS --max-time "${CHAOS_DURATION_S}" \
+    -o "${DOWNLOAD_FILE}" "${INTERNET_URL}" > "${DOWNLOAD_LOG}" 2>&1 &
+DOWNLOAD_PID=$!
 
 mkdir -p "${RESULTS}/screenshots"
 ip netns exec "${CLIENT_NS}" /opt/wifucked-e2e-venv/bin/python3 \
@@ -510,15 +602,34 @@ DISCONNECTS="$(python3 -c "import json;print(json.load(open('${RESULTS}/chaos_su
 SWITCHES="$(python3 -c "import json;print(json.load(open('${RESULTS}/chaos_summary.json'))['primary_switches_observed'])" 2> /dev/null || echo 0)"
 
 if [ "${DISCONNECTS:-999}" != "0" ]; then
-    fragment "15_ap_never_drops" fail "${t0}" \
+    fragment "16_ap_never_drops" fail "${t0}" \
         "the AP client connection disconnected ${DISCONNECTS} time(s) during ${CHAOS_DURATION_S}s of real WAN chaos (SOP-003 invariant)" \
         "$(cat "${ASSOC_LOG}")"
 else
-    fragment "15_ap_never_drops" pass "${t0}" "0 disconnects across ${CHAOS_DURATION_S}s of real WAN chaos"
+    fragment "16_ap_never_drops" pass "${t0}" "0 disconnects across ${CHAOS_DURATION_S}s of real WAN chaos"
 fi
 
 t0="$(now)"
-fragment "16_wan_failover_observed" pass "${t0}" \
+fragment "17_wan_failover_observed" pass "${t0}" \
     "real allocator primary_id switched ${SWITCHES} time(s) over ${CHAOS_DURATION_S}s (see chaos_summary.json, state_snapshots.json)"
+
+# --- the actual point of this test: did the download survive? --------------
+
+t0="$(now)"
+wait "${DOWNLOAD_PID}" 2> /dev/null
+DOWNLOAD_RC=$?
+ACTUAL_SHA256="$(sha256sum "${DOWNLOAD_FILE}" 2> /dev/null | awk '{print $1}')"
+if [ "${DOWNLOAD_RC}" -ne 0 ]; then
+    fragment "18_tunnel_download_survives_chaos" fail "${t0}" \
+        "curl exited ${DOWNLOAD_RC} downloading through the real tunnel during ${CHAOS_DURATION_S}s of real WAN chaos" \
+        "$(cat "${DOWNLOAD_LOG}"); wg: $(wg show 2>&1); nft: $(nft list ruleset 2>&1)"
+elif [ "${ACTUAL_SHA256}" != "${EXPECTED_SHA256}" ]; then
+    fragment "18_tunnel_download_survives_chaos" fail "${t0}" \
+        "downloaded file checksum mismatch (expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256:-none}) -- corrupted somewhere in real nft mark -> wg0 -> fabric NAT -> real HTTP server" \
+        "$(cat "${DOWNLOAD_LOG}")"
+else
+    fragment "18_tunnel_download_survives_chaos" pass "${t0}" \
+        "real download through the real tunnel completed, checksum-correct, surviving ${SWITCHES} real WAN swap(s) and ${CHAOS_DURATION_S}s of chaos"
+fi
 
 finish 0

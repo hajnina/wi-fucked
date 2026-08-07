@@ -32,6 +32,17 @@ real link-health and WAN-primary-switch graphs (inline SVG, no charting
 dependency), the real decision log, and every screenshot — not just a
 pass/fail table.
 
+A real fabric ([`fabric/`](../../../fabric/), unmodified — real Flask app,
+real WireGuard, real NAT) runs directly on the host for this, and a real
+"Internet" stand-in (a plain `http.server`, reachable *no other way*) sits
+behind it. The proof promotes both WAN atomics to `NORMAL` through the real
+`POST /api/atomics/<id>/mode` endpoint — exactly what a user does once from
+the dashboard the first time they see a new connection — then starts a real
+download from the LAN client through the real tunnel, running the whole
+chaos window, and checks it finishes checksum-correct despite real WAN
+swaps. This is the "final leg" `appliance/tests/qemu/`'s own ADR-019 proof
+documented as never completing in its own (more constrained) sandbox.
+
 ## What changed, and why
 
 An earlier version of this test (see git history on this branch) used Linux
@@ -145,11 +156,11 @@ run (pass or fail):
   exercises `LinuxUsb.devices()`'s real sysfs parsing for that path, but not
   the RNDIS-class detection real Android/iPhone tethering hits, and not
   `LinuxWifi` at all (production also defaults Wi-Fi-as-WAN off — ADR-020).
-- **No fabric, no WireGuard tunnel, no LAN-to-Internet routing — yet.** This
-  proof shows the real control loop discovering, probing, and failing over
-  between real WAN links; it does not (yet — see the open item in
-  `docs/active-tests.md`) show a real LAN client's traffic actually reaching
-  the Internet through the tunnel, since that needs a real fabric peer.
+- **WAN atomics start out `UNUSED` and stay that way without the promotion
+  step.** This proof calls the real mode-change API itself, standing in for
+  the one-time action a real user takes from the dashboard — production does
+  not auto-promote a freshly discovered connection, by design
+  (`wifucked.discovery`'s own docstring).
 - **Real `brcmfmac`/CYW43438 firmware and driver behaviour, and real RF, are
   still untested.** `mac80211_hwsim` is a real 802.11 *software* MAC layer —
   real association state machine, real frame exchange — but it cannot

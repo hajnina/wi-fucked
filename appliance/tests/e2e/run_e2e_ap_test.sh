@@ -54,6 +54,28 @@ CHAOS_DURATION_S=150
 WAN1_SUBNET="10.77.1"
 WAN2_SUBNET="10.77.2"
 
+# The real fabric (fabric/src/fabric — real Flask app, real WireGuard, real
+# NAT) runs directly on this host, not in a container or another guest: this
+# CI runner has real kernel WireGuard support, unlike the constrained sandbox
+# appliance/tests/qemu/'s ADR-019 proof was built in, which is the whole
+# reason that proof never closed its own "final leg." Bound to WAN1's own
+# bridge gateway address — reachable from *both* WAN subnets via their
+# default routes, since this host is directly connected to both and already
+# forwards between them (ip_forward=1 below), no extra routing needed.
+FABRIC_HTTP_ADDR="${WAN1_SUBNET}.1"
+FABRIC_HTTP_PORT=8081
+FABRIC_WG_PORT=51820
+FABRIC_USERNAME="e2e"
+FABRIC_PASSWORD="e2e-test-$$"
+# Stands in for "the Internet" — reachable only through the fabric's own
+# NAT/forwarding (ADR-019), on a small private link the fabric's masquerade
+# rule (which matches RFC1918 *source* addresses, not destination) doesn't
+# need to know about specifically.
+INTERNET_HOST_ADDR="198.51.100.1"
+INTERNET_NS_ADDR="198.51.100.2"
+INTERNET_HTTP_PORT=8000
+INTERNET_PAYLOAD_MB=1
+
 log() { printf '[e2e-host] %s\n' "$1"; }
 
 # shellcheck disable=SC2329  # invoked indirectly via `trap ... EXIT` below
@@ -67,17 +89,22 @@ cleanup() {
     fi
     [ -n "${DNSMASQ_WAN1_PID:-}" ] && kill "${DNSMASQ_WAN1_PID}" 2> /dev/null || true
     [ -n "${DNSMASQ_WAN2_PID:-}" ] && kill "${DNSMASQ_WAN2_PID}" 2> /dev/null || true
+    [ -n "${FABRIC_PID:-}" ] && kill "${FABRIC_PID}" 2> /dev/null || true
+    [ -n "${INTERNET_HTTPD_PID:-}" ] && kill "${INTERNET_HTTPD_PID}" 2> /dev/null || true
     iptables -t nat -D POSTROUTING -s "${WAN1_SUBNET}.0/24" -o "${DEFAULT_IFACE:-eth0}" -j MASQUERADE 2> /dev/null || true
     iptables -t nat -D POSTROUTING -s "${WAN2_SUBNET}.0/24" -o "${DEFAULT_IFACE:-eth0}" -j MASQUERADE 2> /dev/null || true
     ip link del tap-wan1 2> /dev/null || true
     ip link del tap-wan2 2> /dev/null || true
     ip link del br-wan1 2> /dev/null || true
     ip link del br-wan2 2> /dev/null || true
+    ip link del veth-inet 2> /dev/null || true
+    ip netns del wifucked-e2e-internet 2> /dev/null || true
+    ip link del wg0 2> /dev/null || true
     rm -rf "${WORKDIR}"
 }
 trap cleanup EXIT
 
-for bin in qemu-system-x86_64 genisoimage mkfs.vfat mcopy curl qemu-img dnsmasq iptables; do
+for bin in qemu-system-x86_64 genisoimage mkfs.vfat mcopy curl qemu-img dnsmasq iptables wg python3; do
     command -v "${bin}" > /dev/null || { echo "FATAL: ${bin} not installed" >&2; exit 1; }
 done
 
@@ -122,6 +149,59 @@ DEFAULT_IFACE="$(ip route show default | awk '{print $5; exit}')"
 iptables -t nat -A POSTROUTING -s "${WAN1_SUBNET}.0/24" -o "${DEFAULT_IFACE}" -j MASQUERADE
 iptables -t nat -A POSTROUTING -s "${WAN2_SUBNET}.0/24" -o "${DEFAULT_IFACE}" -j MASQUERADE
 
+# --- "the Internet" stand-in: reachable only through the fabric's real NAT -
+
+log "building the Internet stand-in (real http.server behind the fabric)"
+ip netns add wifucked-e2e-internet
+ip link add veth-inet type veth peer name veth-inet-ns
+ip link set veth-inet-ns netns wifucked-e2e-internet
+ip addr add "${INTERNET_HOST_ADDR}/30" dev veth-inet
+ip link set veth-inet up
+ip netns exec wifucked-e2e-internet ip link set lo up
+ip netns exec wifucked-e2e-internet ip addr add "${INTERNET_NS_ADDR}/30" dev veth-inet-ns
+ip netns exec wifucked-e2e-internet ip link set veth-inet-ns up
+ip netns exec wifucked-e2e-internet ip route add default via "${INTERNET_HOST_ADDR}"
+
+PAYLOAD_DIR="${WORKDIR}/internet-payload"
+mkdir -p "${PAYLOAD_DIR}"
+dd if=/dev/urandom of="${PAYLOAD_DIR}/payload.bin" bs=1M count="${INTERNET_PAYLOAD_MB}" status=none
+PAYLOAD_SHA256="$(sha256sum "${PAYLOAD_DIR}/payload.bin" | awk '{print $1}')"
+log "Internet stand-in payload: ${INTERNET_PAYLOAD_MB}MB, sha256=${PAYLOAD_SHA256}"
+ip netns exec wifucked-e2e-internet python3 -m http.server "${INTERNET_HTTP_PORT}" \
+    --directory "${PAYLOAD_DIR}" --bind "${INTERNET_NS_ADDR}" \
+    > "${WORKDIR}/internet-httpd.log" 2>&1 &
+INTERNET_HTTPD_PID=$!
+
+# --- the real fabric: real Flask app, real WireGuard, real NAT -------------
+#
+# Runs directly on this host (root, for NET_ADMIN — the whole script is
+# already sudo for the taps/iptables above), not in a container: the only
+# thing fabric/Dockerfile's container buys over that is process isolation
+# this ephemeral CI runner doesn't need, and a container would need its own
+# network plumbing to reach the WAN bridges anyway.
+
+log "starting the real fabric (${FABRIC_HTTP_ADDR}:${FABRIC_HTTP_PORT}, wg :${FABRIC_WG_PORT})"
+python3 -m venv "${WORKDIR}/fabric-venv"
+"${WORKDIR}/fabric-venv/bin/pip" install --quiet -r "${REPO_ROOT}/fabric/requirements.txt"
+mkdir -p /var/lib/fabric
+env \
+    FABRIC_ADDRESS="${FABRIC_HTTP_ADDR}:${FABRIC_WG_PORT}" \
+    FABRIC_USERNAME="${FABRIC_USERNAME}" \
+    FABRIC_PASSWORD="${FABRIC_PASSWORD}" \
+    FABRIC_WG_LISTEN_PORT="${FABRIC_WG_PORT}" \
+    PYTHONPATH="${REPO_ROOT}/fabric/src" \
+    "${WORKDIR}/fabric-venv/bin/python3" -c "
+from fabric.app import create_app
+create_app().run(host='${FABRIC_HTTP_ADDR}', port=${FABRIC_HTTP_PORT})
+" > "${WORKDIR}/fabric.log" 2>&1 &
+FABRIC_PID=$!
+sleep 2
+if ! kill -0 "${FABRIC_PID}" 2> /dev/null; then
+    log "FATAL: fabric process did not stay running"
+    cat "${WORKDIR}/fabric.log" >&2
+    exit 1
+fi
+
 # --- base image (cached) -----------------------------------------------------
 
 BASE_IMAGE="$("${HERE}/download_base_image.sh" | tail -n1)"
@@ -149,6 +229,22 @@ fi
 log "building the real OTA package (scripts/build_package.sh)"
 mkdir -p "${STAGE}/e2e-package"
 "${REPO_ROOT}/scripts/build_package.sh" "0.0.0-e2e" "${STAGE}/e2e-package/wifucked.wtf"
+
+# The guest needs the fabric's address/credentials to write a real
+# config.json (wifucked.config's real schema) before wifucked.service's own
+# one-shot fabric attach, plus the Internet stand-in's URL and expected
+# checksum to verify a real download against. Plain JSON, read by
+# guest/e2e_driver.sh off the read-only repo ISO — no network round-trip
+# needed to hand this off, it's already known before boot.
+cat > "${STAGE}/e2e-fabric-config.json" << EOF
+{
+  "fabric_url": "http://${FABRIC_HTTP_ADDR}:${FABRIC_HTTP_PORT}",
+  "fabric_username": "${FABRIC_USERNAME}",
+  "fabric_password": "${FABRIC_PASSWORD}",
+  "internet_url": "http://${INTERNET_NS_ADDR}:${INTERNET_HTTP_PORT}/payload.bin",
+  "payload_sha256": "${PAYLOAD_SHA256}"
+}
+EOF
 
 genisoimage -quiet -r -J -o "${WORKDIR}/repo.iso" "${STAGE}"
 
@@ -243,6 +339,14 @@ wait "${CHAOS_PID}" 2> /dev/null || true
 cp -f "${WORKDIR}/console.log" "${RESULTS_DIR}/console.log" 2> /dev/null || true
 cp -f "${WORKDIR}/chaos_wan.log" "${RESULTS_DIR}/chaos_wan.log" 2> /dev/null || true
 cp -f "${WORKDIR}"/dnsmasq-wan*.log "${RESULTS_DIR}/" 2> /dev/null || true
+cp -f "${WORKDIR}/fabric.log" "${RESULTS_DIR}/fabric.log" 2> /dev/null || true
+cp -f "${WORKDIR}/internet-httpd.log" "${RESULTS_DIR}/internet-httpd.log" 2> /dev/null || true
+{
+    echo "== host-side fabric wg0 =="
+    wg show wg0 2>&1
+    echo "== host-side fabric peers.json =="
+    cat /var/lib/fabric/peers.json 2>&1
+} > "${RESULTS_DIR}/fabric-host-diagnostics.log" 2>&1 || true
 
 # --- extract results ---------------------------------------------------------
 

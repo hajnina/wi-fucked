@@ -116,7 +116,7 @@ jobs:
       - name: Install QEMU + image-building tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils genisoimage dosfstools mtools rsync zip dnsmasq iptables
+          sudo apt-get install -y qemu-system-x86 qemu-utils genisoimage dosfstools mtools rsync zip dnsmasq iptables wireguard-tools nftables python3-venv
 
       # Cached across runs — this is a ~300 MB base image download that never
       # changes unless Debian ships a new bookworm point release.
