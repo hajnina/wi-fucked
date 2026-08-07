@@ -277,10 +277,11 @@ fragment "09_dashboard_up" pass "${t0}" "real dashboard listening on ${GATEWAY}:
 # --- phase: real client, from inside the guest ------------------------------
 
 t0="$(now)"
-ip netns exec "${CLIENT_NS}" iw dev "${CLIENT_RAW}" connect "${SSID}"
+SCAN_OUT="$(ip netns exec "${CLIENT_NS}" iw dev "${CLIENT_RAW}" scan 2>&1)"
+ip netns exec "${CLIENT_NS}" iw dev "${CLIENT_RAW}" connect "${SSID}" 2>&1
 ASSOCIATED=0
 for _ in $(seq 1 "${TIMEOUT_S}"); do
-    if ip netns exec "${CLIENT_NS}" iw dev "${CLIENT_RAW}" link | grep -q '^Connected to'; then
+    if ip netns exec "${CLIENT_NS}" iw dev "${CLIENT_RAW}" link 2>&1 | grep -q '^Connected to'; then
         ASSOCIATED=1
         break
     fi
@@ -288,7 +289,11 @@ for _ in $(seq 1 "${TIMEOUT_S}"); do
 done
 if [ "${ASSOCIATED}" != "1" ]; then
     fragment "10_client_associate" fail "${t0}" "client did not associate to ${SSID} within ${TIMEOUT_S}s" \
-        "$(ip netns exec "${CLIENT_NS}" iw dev "${CLIENT_RAW}" link)"
+        "$(ip netns exec "${CLIENT_NS}" iw dev "${CLIENT_RAW}" link 2>&1; \
+           echo "--- scan (SSID visible?) ---"; echo "${SCAN_OUT}" | grep -iE 'SSID|BSS ' ; \
+           echo "--- hostapd_cli all_sta ---"; hostapd_cli -i wlan0 all_sta 2>&1; \
+           echo "--- journalctl hostapd (last 60) ---"; journalctl -u hostapd --no-pager -n 60; \
+           echo "--- dmesg (last 60, mac80211/cfg80211/hwsim) ---"; dmesg | grep -iE 'hwsim|cfg80211|mac80211' | tail -60)"
     finish 1
 fi
 fragment "10_client_associate" pass "${t0}" "real 802.11 association to ${SSID}"
