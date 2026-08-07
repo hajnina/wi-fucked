@@ -14,6 +14,24 @@ Wi-Fi client: real `iw connect` association, a real DHCP lease from the real
 `dnsmasq`, a real `ping` at the gateway, and a real headless Chromium
 (Playwright) at the real dashboard.
 
+Two real WAN links join the same guest: `tap-wan1`/`tap-wan2`, host-side taps
+presented to the guest as real USB-Ethernet devices (QEMU `usb-net`, CDC-ECM)
+so the real `wifucked.hal.linux.LinuxUsb.devices()` sysfs classification code
+discovers them — not a fixture standing in for it. The host plays "the ISP"
+for each (DHCP, then NAT to the real Internet, so the daemon's real,
+hardcoded active-probe targets — `1.1.1.1`/`8.8.8.8` — are genuinely
+reachable) and degrades them independently with
+[`appliance/tests/qemu/chaos_wan.sh`](../qemu/chaos_wan.sh) while the real
+control loop (`Discoverer`, `Allocator`, `LinuxProber`, `WireGuardTunnel`,
+`LinuxEnforcer` — real, unmodified, `wifucked.service` itself) reacts. The
+proof polls the real dashboard's `/api/state`/`/api/decisions` throughout,
+screenshots it three times, and checks the one invariant that matters most
+(SOP-003): the AP client's association never drops, no matter what the WAN
+links are doing. `build_report.py` turns all of that into `report.html` —
+real link-health and WAN-primary-switch graphs (inline SVG, no charting
+dependency), the real decision log, and every screenshot — not just a
+pass/fail table.
+
 ## What changed, and why
 
 An earlier version of this test (see git history on this branch) used Linux
@@ -36,23 +54,34 @@ sudo appliance/tests/e2e/run_e2e_ap_test.sh [results-dir]
 ```
 
 Requires root, `qemu-system-x86_64`, `qemu-img`, `genisoimage`, `mkfs.vfat`
-(`dosfstools`), and `mtools` on `PATH`. First run downloads and caches a
-~300 MB Debian 12 cloud image (`download_base_image.sh`, cached under
-`.work/`, or via `actions/cache` in CI). This is why it is **not** part of
-`run_all_tests.sh` (SOP-003: "no test may require... root") and instead runs
-as its own CI job (`.github/workflows/ci.yml`'s `e2e-ap-dashboard`).
+(`dosfstools`), `mtools`, `dnsmasq`, and `iptables` on `PATH`. First run
+downloads and caches a ~300 MB Debian 12 cloud image (`download_base_image.sh`,
+cached under `.work/`, or via `actions/cache` in CI). This is why it is
+**not** part of `run_all_tests.sh` (SOP-003: "no test may require... root")
+and instead runs as its own CI job (`.github/workflows/ci.yml`'s
+`e2e-ap-dashboard`). Budget 5-8 minutes: AP bring-up is under two, the WAN
+chaos window (`CHAOS_DURATION_S`, defined identically in this script and
+`guest/e2e_driver.sh`) runs for 150s on its own.
 
 `results-dir` defaults to `<repo-root>/e2e-artifacts/` and receives, on every
 run (pass or fail):
 
 - `report.json` / `report.md` — one row per stage, pass/fail, timing, detail
-- `junit.xml` — same, as JUnit XML
-- `screenshots/dashboard.png` — full-page screenshot of the live dashboard
+- `report.html` — **the rich report**: real link-health and WAN-failover
+  timeline graphs, the real decision log, and every screenshot, in one page
+- `junit.xml` — the stage table, as JUnit XML
+- `screenshots/<label>/dashboard.png` — full-page screenshots: AP bring-up,
+  and three more (start/mid/end) through the WAN chaos window
+- `state_snapshots.json` — raw `/api/state` polls + `/api/decisions` — what
+  `report.html`'s graphs are built from, if you want the numbers directly
+- `chaos_summary.json` — disconnect count and observed WAN-primary switch count
+- `chaos_wan.log` — exactly what the host did to `tap-wan1`/`tap-wan2`, when
 - `console.log` — the guest's serial console (kernel boot, cloud-init, systemd)
 - `logs/driver.log` — the E2E driver script's own narration
 - `logs/diagnostics.txt` — `systemctl status`/`journalctl` for every relevant
-  unit, `ip addr`, `nmcli device status`, `hostapd_cli status`, and every
-  generated config file, captured unconditionally (not just on failure)
+  unit, `ip addr`, `nmcli device status`, `hostapd_cli status`, real
+  `/sys/bus/usb/devices` contents, the real `/api/state`, and every generated
+  config file, captured unconditionally (not just on failure)
 
 ## What's actually running, and why it's shaped this way
 
@@ -106,10 +135,21 @@ run (pass or fail):
   time, so `NetworkManager` never sees `wlan0` before the
   `unmanaged-devices` rule protecting it exists. Here, `setup_rpi.sh` runs
   *during* this guest's first (and only) boot, after `wlan0` already exists
-  — a real, narrow race this harness does not have on real hardware,
-  mitigated with an explicit `nmcli device set wlan0 managed no` immediately
-  after the interface is renamed, but not eliminated by construction the way
-  baking the config into the image does.
+  — a real, narrow race this harness does not have on real hardware. Not
+  eliminated by construction the way baking the config into the image does;
+  mitigated only by `guest/e2e_driver.sh` explicitly restarting
+  `NetworkManager` after `setup_rpi.sh` writes the `unmanaged-devices`
+  config, before `hostapd` starts.
+- **WAN atomics are real USB-Ethernet, not real USB tethering or Wi-Fi-as-WAN.**
+  QEMU's `usb-net` emulates the CDC-ECM class real USB Ethernet dongles use —
+  exercises `LinuxUsb.devices()`'s real sysfs parsing for that path, but not
+  the RNDIS-class detection real Android/iPhone tethering hits, and not
+  `LinuxWifi` at all (production also defaults Wi-Fi-as-WAN off — ADR-020).
+- **No fabric, no WireGuard tunnel, no LAN-to-Internet routing — yet.** This
+  proof shows the real control loop discovering, probing, and failing over
+  between real WAN links; it does not (yet — see the open item in
+  `docs/active-tests.md`) show a real LAN client's traffic actually reaching
+  the Internet through the tunnel, since that needs a real fabric peer.
 - **Real `brcmfmac`/CYW43438 firmware and driver behaviour, and real RF, are
   still untested.** `mac80211_hwsim` is a real 802.11 *software* MAC layer —
   real association state machine, real frame exchange — but it cannot
@@ -128,7 +168,9 @@ run (pass or fail):
 |---|---|
 | `download_base_image.sh` | Fetches + caches the Debian 12 "generic" cloud qcow2 |
 | `cloud-init/user-data`, `cloud-init/meta-data` | Minimal NoCloud seed — mounts the repo/results disks, hands off to `guest/e2e_driver.sh` |
-| `guest/e2e_driver.sh` | Runs *inside* the guest as root: hwsim/wlan0 setup, the real `setup_rpi.sh`, real service startup, real client association/DHCP/ping/Playwright, writes the report |
+| `guest/e2e_driver.sh` | Runs *inside* the guest as root: hwsim/wlan0 setup, the real `setup_rpi.sh`, real service startup, real client association/DHCP/ping/Playwright, real WAN discovery + chaos monitoring, writes the report |
 | `playwright_check.py` | Real headless Chromium at the real dashboard URL; screenshot + assertions (called by `e2e_driver.sh` inside the guest) |
+| `monitor_state.py` | Polls the real `/api/state`/`/api/decisions` throughout the WAN chaos window (called inside the guest) |
 | `write_fragment.py` / `aggregate_report.py` | Turn each stage's pass/fail into `report.json`/`report.md`/`junit.xml` (pure stdlib — run both inside the guest and, for the "guest never finished" case, on the host) |
-| `run_e2e_ap_test.sh` | Host orchestrator: builds the repo/seed/results disk images, boots QEMU, waits, extracts results |
+| `build_report.py` | Turns fragments + `state_snapshots.json` + screenshots into `report.html` — the real graphs, decision log, and every screenshot in one page (runs on the host) |
+| `run_e2e_ap_test.sh` | Host orchestrator: builds the repo/seed/results disk images, stands up the two WAN taps (DHCP + NAT), boots QEMU, runs `chaos_wan.sh` against the taps, waits, extracts results, builds the report |

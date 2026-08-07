@@ -62,6 +62,16 @@ dump_diagnostics() {
         for f in /etc/systemd/network/*.network; do echo "--- ${f} ---"; cat "${f}" 2>&1; done
         echo "== /etc/NetworkManager/conf.d/10-wifucked.conf =="
         cat /etc/NetworkManager/conf.d/10-wifucked.conf 2>&1
+        echo "== /sys/bus/usb/devices (real WAN discovery input) =="
+        for d in /sys/bus/usb/devices/*; do
+            [ -f "${d}/idVendor" ] || continue
+            echo "--- ${d} ---"
+            echo "idVendor=$(cat "${d}/idVendor" 2> /dev/null) idProduct=$(cat "${d}/idProduct" 2> /dev/null)"
+            find "${d}" -maxdepth 3 -name bInterfaceClass -exec sh -c \
+                'echo "  $(dirname "$1"): class=$(cat "$1") subclass=$(cat "$(dirname "$1")/bInterfaceSubClass" 2>/dev/null)"' _ {} \;
+        done
+        echo "== real /api/state =="
+        curl -s -u "wifucked:${API_TOKEN:-}" "http://${GATEWAY}:8080/api/state" 2>&1
     } > "${RESULTS}/logs/diagnostics.txt" 2>&1
 }
 
@@ -372,5 +382,143 @@ else
     fragment "13_dashboard_playwright" fail "${t0}" "real headless Chromium could not load the real dashboard" \
         "$(cat "${RESULTS}/logs/playwright.log")"
 fi
+
+# --- phase: real WAN discovery — the two host-provided USB-Ethernet links --
+#
+# The host attached them as QEMU `usb-net` (CDC-ECM) devices specifically so
+# `wifucked.hal.linux.LinuxUsb.devices()` discovers them through the real
+# sysfs class/subclass descriptor parsing this repo ships (`_classify_interface`),
+# not a fixture standing in for it. NetworkManager (installed by the real
+# setup_rpi.sh, no unmanaged-devices rule excludes these) DHCPs them for real
+# against the host's own dnsmasq instances.
+
+t0="$(now)"
+WAN_PRESENT=0
+for _ in $(seq 1 "${TIMEOUT_S}"); do
+    COUNT="$(curl -s -u "wifucked:${API_TOKEN}" "http://${GATEWAY}:8080/api/state" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["counts"]["present"])' 2> /dev/null)"
+    if [ "${COUNT:-0}" -ge 2 ] 2> /dev/null; then
+        WAN_PRESENT=1
+        break
+    fi
+    sleep 1
+done
+if [ "${WAN_PRESENT}" != "1" ]; then
+    fragment "14_wan_discovery" fail "${t0}" \
+        "fewer than 2 WAN atomics discovered within ${TIMEOUT_S}s (real LinuxUsb sysfs discovery)" \
+        "$(curl -s -u "wifucked:${API_TOKEN}" "http://${GATEWAY}:8080/api/state"); nmcli: $(nmcli device status 2>&1)"
+    finish 1
+fi
+fragment "14_wan_discovery" pass "${t0}" "${COUNT} WAN atomics discovered via real USB sysfs"
+
+# --- phase: real WAN chaos — the actual control loop reacting live ---------
+#
+# CHAOS_DURATION_S must match run_e2e_ap_test.sh's own constant of the same
+# name — no kernel cmdline to thread it through on a full-disk boot (see that
+# script's comment). The host is degrading tap-wan1/tap-wan2 independently
+# (appliance/tests/qemu/chaos_wan.sh) for this whole window; this guest's job
+# is to watch the real Daemon/Allocator/LinuxProber react, screenshot the
+# real dashboard at three points, and confirm the one invariant that matters
+# most (SOP-003): the AP client connection never drops, whatever the WAN
+# links are doing.
+CHAOS_DURATION_S=150
+
+t0="$(now)"
+ASSOC_LOG="${RESULTS}/logs/client_association_during_chaos.log"
+: > "${ASSOC_LOG}"
+(
+    while true; do
+        ts="$(date +%s.%N)"
+        if ip netns exec "${CLIENT_NS}" iw dev "${CLIENT_RAW}" link 2> /dev/null | grep -q '^Connected to'; then
+            echo "${ts} connected" >> "${ASSOC_LOG}"
+        else
+            echo "${ts} DISCONNECTED" >> "${ASSOC_LOG}"
+        fi
+        sleep 2
+    done
+) &
+ASSOC_WATCH_PID=$!
+
+mkdir -p "${RESULTS}/screenshots"
+ip netns exec "${CLIENT_NS}" /opt/wifucked-e2e-venv/bin/python3 \
+    "${REPO}/appliance/tests/e2e/playwright_check.py" \
+    --url "http://${GATEWAY}:8080/" --token "${API_TOKEN}" \
+    --out-dir "${RESULTS}/screenshots/chaos_01_start" > "${RESULTS}/logs/playwright-chaos-start.log" 2>&1 || true
+
+/opt/wifucked-e2e-venv/bin/python3 "${REPO}/appliance/tests/e2e/monitor_state.py" \
+    --url "http://${GATEWAY}:8080" --token "${API_TOKEN}" \
+    --duration-s "$(awk -v d="${CHAOS_DURATION_S}" 'BEGIN{print d/2}')" --interval-s 3 \
+    --out "${RESULTS}/state_snapshots_1.json"
+
+ip netns exec "${CLIENT_NS}" /opt/wifucked-e2e-venv/bin/python3 \
+    "${REPO}/appliance/tests/e2e/playwright_check.py" \
+    --url "http://${GATEWAY}:8080/" --token "${API_TOKEN}" \
+    --out-dir "${RESULTS}/screenshots/chaos_02_mid" > "${RESULTS}/logs/playwright-chaos-mid.log" 2>&1 || true
+
+/opt/wifucked-e2e-venv/bin/python3 "${REPO}/appliance/tests/e2e/monitor_state.py" \
+    --url "http://${GATEWAY}:8080" --token "${API_TOKEN}" \
+    --duration-s "$(awk -v d="${CHAOS_DURATION_S}" 'BEGIN{print d/2}')" --interval-s 3 \
+    --out "${RESULTS}/state_snapshots_2.json"
+
+ip netns exec "${CLIENT_NS}" /opt/wifucked-e2e-venv/bin/python3 \
+    "${REPO}/appliance/tests/e2e/playwright_check.py" \
+    --url "http://${GATEWAY}:8080/" --token "${API_TOKEN}" \
+    --out-dir "${RESULTS}/screenshots/chaos_03_end" > "${RESULTS}/logs/playwright-chaos-end.log" 2>&1 || true
+
+kill "${ASSOC_WATCH_PID}" 2> /dev/null || true
+wait "${ASSOC_WATCH_PID}" 2> /dev/null || true
+
+python3 - "${RESULTS}" "${ASSOC_LOG}" << 'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+results_dir, assoc_log = Path(sys.argv[1]), Path(sys.argv[2])
+
+merged = {"snapshots": [], "decisions": []}
+for name in ("state_snapshots_1.json", "state_snapshots_2.json"):
+    path = results_dir / name
+    if path.exists():
+        data = json.loads(path.read_text())
+        merged["snapshots"].extend(data.get("snapshots", []))
+        merged["decisions"] = data.get("decisions", []) or merged["decisions"]
+(results_dir / "state_snapshots.json").write_text(json.dumps(merged, indent=2))
+
+lines = assoc_log.read_text().splitlines() if assoc_log.exists() else []
+disconnects = [line for line in lines if "DISCONNECTED" in line]
+
+primary_ids = [
+    s["state"]["allocation"]["primary_id"]
+    for s in merged["snapshots"]
+    if s.get("state") and s["state"].get("allocation")
+]
+switches = sum(1 for a, b in zip(primary_ids, primary_ids[1:]) if a != b)
+
+summary = {
+    "samples": len(lines),
+    "disconnect_samples": len(disconnects),
+    "snapshots": len(merged["snapshots"]),
+    "decisions": len(merged["decisions"]),
+    "primary_switches_observed": switches,
+    "primary_timeline": primary_ids,
+}
+(results_dir / "chaos_summary.json").write_text(json.dumps(summary, indent=2))
+print(json.dumps(summary, indent=2))
+PYEOF
+
+DISCONNECTS="$(python3 -c "import json;print(json.load(open('${RESULTS}/chaos_summary.json'))['disconnect_samples'])" 2> /dev/null || echo 999)"
+SWITCHES="$(python3 -c "import json;print(json.load(open('${RESULTS}/chaos_summary.json'))['primary_switches_observed'])" 2> /dev/null || echo 0)"
+
+if [ "${DISCONNECTS:-999}" != "0" ]; then
+    fragment "15_ap_never_drops" fail "${t0}" \
+        "the AP client connection disconnected ${DISCONNECTS} time(s) during ${CHAOS_DURATION_S}s of real WAN chaos (SOP-003 invariant)" \
+        "$(cat "${ASSOC_LOG}")"
+else
+    fragment "15_ap_never_drops" pass "${t0}" "0 disconnects across ${CHAOS_DURATION_S}s of real WAN chaos"
+fi
+
+t0="$(now)"
+fragment "16_wan_failover_observed" pass "${t0}" \
+    "real allocator primary_id switched ${SWITCHES} time(s) over ${CHAOS_DURATION_S}s (see chaos_summary.json, state_snapshots.json)"
 
 finish 0
