@@ -1,3 +1,12 @@
+## v1.6.2 — 2026-08-07
+
+### feat
+- shape ingress (download) via an IFB redirect (#57)
+
+### docs
+- changelog for v1.6.1 [skip ci]
+
+
 ## v1.6.1 — 2026-08-07
 
 ### fix
