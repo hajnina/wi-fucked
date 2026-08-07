@@ -648,6 +648,16 @@ if [ "${DOWNLOAD_RC}" -ne 0 ]; then
     fragment "18_tunnel_download_survives_chaos" fail "${t0}" \
         "curl exited ${DOWNLOAD_RC} downloading through the real tunnel during ${CHAOS_DURATION_S}s of real WAN chaos" \
         "$(cat "${DOWNLOAD_LOG}"); wg: $(wg show 2>&1); nft: $(nft list ruleset 2>&1); ip_rule: $(ip rule show 2>&1); ip_route_tables: $(for t in $(ip rule show 2>&1 | grep -oE 'lookup [0-9]+' | awk '{print $2}' | sort -u); do echo "table ${t}:"; ip route show table "${t}" 2>&1; done); route_get_wg0: $(ip route get 198.51.100.2 mark "${FWMARK:-0x0}" 2>&1); rp_filter: $(for f in /proc/sys/net/ipv4/conf/*/rp_filter; do echo "${f}=$(cat "${f}" 2>&1)"; done)"
+    # ip_rule/ip_route_tables above answers *whether* render() ever installed
+    # a policy route; this answers *why not* — item 15's fix made ceiling_bps
+    # depend on real demand (max(up_bps, down_bps)), so if it's still 0 the
+    # whole run, either no demand was ever measured for this client's
+    # profile, or it was measured but never became nonzero. The daemon's own
+    # workflow=enforce_reconcile logs report route_rules/marks every tick;
+    # grepping the full 150s+ run instead of just the last 150 lines shows
+    # the actual trend rather than one late snapshot.
+    journalctl -u wifucked --no-pager 2>&1 | grep -E "workflow='(enforce_reconcile|demand_sample|allocation_decision)'|ceiling_bps|route_rules" \
+        > "${RESULTS}/enforce_reconcile_trend.log" 2>&1 || true
 elif [ "${ACTUAL_SHA256}" != "${EXPECTED_SHA256}" ]; then
     fragment "18_tunnel_download_survives_chaos" fail "${t0}" \
         "downloaded file checksum mismatch (expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256:-none}) -- corrupted somewhere in real nft mark -> wg0 -> fabric NAT -> real HTTP server" \
