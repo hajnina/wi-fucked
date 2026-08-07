@@ -216,7 +216,7 @@ INTERNET_HTTPD_PID=$!
 # (including wg0, created later by the fabric's own `ensure_ready()` on the
 # appliance's first registration) — starting it here, before the fabric
 # even runs, means the capture can't miss the moment wg0 first appears.
-tcpdump -i any -nn -w "${WORKDIR}/capture.pcap" \
+tcpdump -Z root -i any -nn -w "${WORKDIR}/capture.pcap" \
     "host ${INTERNET_HOST_ADDR} or host ${INTERNET_NS_ADDR}" \
     > "${WORKDIR}/tcpdump.log" 2>&1 &
 TCPDUMP_PID=$!
@@ -430,6 +430,7 @@ if [ -n "${TCPDUMP_PID:-}" ] && kill -0 "${TCPDUMP_PID}" 2> /dev/null; then
     wait "${TCPDUMP_PID}" 2> /dev/null || true
 fi
 cp -f "${WORKDIR}/capture.pcap" "${RESULTS_DIR}/capture.pcap" 2> /dev/null || true
+cp -f "${WORKDIR}/tcpdump.log" "${RESULTS_DIR}/tcpdump.log" 2> /dev/null || true
 tcpdump -r "${WORKDIR}/capture.pcap" -nn -vvv > "${RESULTS_DIR}/capture.txt" 2>&1 || true
 {
     echo "== host-side fabric wg0 =="

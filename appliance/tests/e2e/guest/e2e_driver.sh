@@ -554,10 +554,10 @@ DOWNLOAD_LOG="${RESULTS}/logs/download_through_tunnel.log"
 # hard-coded twice, so the two scripts can't silently drift apart.
 INTERNET_HOST="$(python3 -c "from urllib.parse import urlparse; print(urlparse('${INTERNET_URL}').hostname)")"
 apt-get install -y -qq tcpdump > /dev/null 2>&1 || true
-tcpdump -i wlan0 -nn -w "${RESULTS}/logs/wlan0.pcap" "host ${INTERNET_HOST}" \
+tcpdump -Z root -i wlan0 -nn -w "${RESULTS}/logs/wlan0.pcap" "host ${INTERNET_HOST}" \
     > "${RESULTS}/logs/tcpdump-wlan0.log" 2>&1 &
 TCPDUMP_WLAN0_PID=$!
-tcpdump -i wg0 -nn -w "${RESULTS}/logs/wg0.pcap" \
+tcpdump -Z root -i wg0 -nn -w "${RESULTS}/logs/wg0.pcap" \
     > "${RESULTS}/logs/tcpdump-wg0.log" 2>&1 &
 TCPDUMP_WG0_PID=$!
 
