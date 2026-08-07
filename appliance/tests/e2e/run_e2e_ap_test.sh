@@ -92,6 +92,7 @@ cleanup() {
     [ -n "${FABRIC_PID:-}" ] && kill "${FABRIC_PID}" 2> /dev/null || true
     [ -n "${INTERNET_HTTPD_PID:-}" ] && kill "${INTERNET_HTTPD_PID}" 2> /dev/null || true
     [ -n "${TCPDUMP_PID:-}" ] && kill "${TCPDUMP_PID}" 2> /dev/null || true
+    [ -n "${WG_DEBUG_WATCH_PID:-}" ] && kill "${WG_DEBUG_WATCH_PID}" 2> /dev/null || true
     iptables -t nat -D POSTROUTING -s "${WAN1_SUBNET}.0/24" -o "${DEFAULT_IFACE:-eth0}" -j MASQUERADE 2> /dev/null || true
     iptables -t nat -D POSTROUTING -s "${WAN2_SUBNET}.0/24" -o "${DEFAULT_IFACE:-eth0}" -j MASQUERADE 2> /dev/null || true
     for fwd_if in wg0 veth-inet tap-wan1 tap-wan2; do
@@ -231,10 +232,6 @@ TCPDUMP_PID=$!
 # source address — which is a different check from the crypto-routing that
 # already-live counters (`wg show ... transfer`) reflect, since WireGuard's
 # rx byte accounting happens at successful decrypt, before this check runs.
-# Turn on the kernel module's own dynamic debug logging so a real rejection
-# prints directly to dmesg instead of staying a hypothesis. No-op (silently)
-# if this kernel wasn't built with CONFIG_DYNAMIC_DEBUG.
-echo "module wireguard +p" > /sys/kernel/debug/dynamic_debug/control 2>&1 || true
 
 # --- the real fabric: real Flask app, real WireGuard, real NAT -------------
 #
@@ -265,6 +262,26 @@ if ! kill -0 "${FABRIC_PID}" 2> /dev/null; then
     cat "${WORKDIR}/fabric.log" >&2
     exit 1
 fi
+
+# `wg0` (and the wireguard kernel module) doesn't exist until the fabric's
+# ensure_ready() runs, which only happens lazily on the appliance's first
+# /register call — minutes from now, once the guest has booted far enough.
+# /sys/kernel/debug/dynamic_debug/control only has entries for a module
+# already loaded, so enabling this any earlier (tried once, item 16) is a
+# silent no-op. Poll for wg0 in the background and enable the module's own
+# debug logging the moment it actually exists, so a real allowed-ips
+# rejection - the leading suspect once routing/NAT/forwarding/rp_filter/
+# tcpdump all came back clean - prints straight to dmesg.
+(
+    for _ in $(seq 1 280); do
+        if ip link show wg0 > /dev/null 2>&1; then
+            echo "module wireguard +p" > /sys/kernel/debug/dynamic_debug/control 2>&1 || true
+            break
+        fi
+        sleep 1
+    done
+) &
+WG_DEBUG_WATCH_PID=$!
 
 # --- base image (cached) -----------------------------------------------------
 
