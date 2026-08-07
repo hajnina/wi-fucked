@@ -91,7 +91,7 @@ class Harness:
         kind: Kind = Kind.WIFI,
         label: str | None = None,
         mode: Mode = Mode.NORMAL,
-        capacity_bps: int = 10_000_000,
+        capacity_bps: int | None = 10_000_000,
         up_bps: int = 2_000_000,
         rtt_ms: float = 40.0,
         loss_pct: float = 0.0,
@@ -100,6 +100,13 @@ class Harness:
 
         Scenarios are about control behaviour, not about whether nmcli parses.
         Discovery has its own tests.
+
+        ``capacity_bps=None`` leaves the atomic genuinely never-measured
+        (``Capacity.measured_at`` stays ``None``) instead of the default
+        immediate saturated-observation seed every other scenario relies on
+        — every scenario before ADR-024's bootstrap-floor test hand-seeded
+        capacity this way, which is exactly what hid backlog item 16's
+        capacity-side deadlock from every scenario test that existed.
         """
         atomic = Atomic(
             id=atomic_id,
@@ -113,7 +120,8 @@ class Harness:
         self._injected[atomic_id] = atomic
         self._sweep()
         self.daemon.registry.set_mode(atomic_id, mode)
-        self.set_capacity(atomic_id, capacity_bps, up_bps, rtt_ms, loss_pct)
+        if capacity_bps is not None:
+            self.set_capacity(atomic_id, capacity_bps, up_bps, rtt_ms, loss_pct)
         return atomic_id
 
     def remove_atomic(self, atomic_id: str) -> None:
