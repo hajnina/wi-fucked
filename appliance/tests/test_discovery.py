@@ -63,13 +63,24 @@ def test_ethernet_atomic_returns_none_without_a_mac():
     assert ethernet_atomic(hal, "no-such-interface") is None
 
 
-def test_discovered_connections_are_unused_until_classified():
-    """Discovery reports presence; it never grants permission on its own."""
+def test_scanned_wifi_networks_are_unused_until_joined():
+    """A merely-scanned network isn't even connected yet; it can't be "main"."""
     hal = build_mock_hal()
 
     atomics = discover(hal)
 
-    assert all(a.mode is Mode.UNUSED for a in atomics)
+    assert all(a.mode is Mode.UNUSED for a in atomics if a.kind is Kind.WIFI)
+
+
+def test_physically_connected_usb_devices_default_to_main():
+    """ADR-022: a plugged-in connection enables itself; no dashboard visit needed."""
+    hal = build_mock_hal()
+
+    atomics = discover(hal)
+
+    usb_atomics = [a for a in atomics if a.kind in (Kind.USB_TETHER, Kind.USB_ETHERNET)]
+    assert usb_atomics, "mock HAL should report at least one attached USB device"
+    assert all(a.mode is Mode.NORMAL for a in usb_atomics)
 
 
 def test_connected_wifi_network_is_marked_good():

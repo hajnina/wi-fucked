@@ -4,9 +4,13 @@ The user should never have to think about ``wlan0``, ``usb0``, or ``eth0``.
 Discovery translates whatever the hardware reports into human-readable atomics
 with stable identities (ADR-002).
 
-Discovery reports what is *present*. It never decides what to use — that is the
-user's choice, expressed as a mode, and a newly discovered connection is always
-UNUSED until they say otherwise.
+Discovery reports what is *present*. A newly discovered connection defaults to
+NORMAL ("main") — enablement is fully automatic; the user's only manual choice
+is MAIN vs. BACKUP for a connection that already exists (ADR-022). This default
+only ever applies the first time an atomic is ever seen: `Registry.observe()`
+never resets an already-known atomic's mode back to a default, so a user's
+choice — including reclassifying something to BACKUP, or an operator later
+setting UNUSED by hand — always sticks.
 """
 
 from __future__ import annotations
@@ -169,7 +173,11 @@ def _discover_usb(hal: Hal) -> list[Atomic]:
                 id=usb_id(kind, device.vendor, device.product, device.serial, device.port_path),
                 kind=kind,
                 label=device.description or "USB connection",
-                mode=Mode.UNUSED,
+                # A physically-plugged-in USB connection enables itself
+                # (ADR-022) — unlike a merely-scanned Wi-Fi network below,
+                # which isn't even joined yet, this is a real, present
+                # connection the moment discovery sees it.
+                mode=Mode.NORMAL,
                 health=Health.GOOD if carrier else Health.DOWN,
                 ifname=device.ifname,
                 present=True,
