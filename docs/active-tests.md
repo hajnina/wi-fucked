@@ -195,17 +195,6 @@ client's 802.11 association does not drop across the whole chaos window
   with no capacity history, and this proof doesn't yet have enough
   confidence in that threshold behavior to gate on a specific count. Worth
   tightening once a few real runs show what's typical.
-- **No fabric, no real WireGuard tunnel, no LAN-to-Internet routing.**
-  `tunnel.bind_to()` runs for real when the allocator picks a new primary,
-  but with no fabric peer configured the handshake itself cannot complete —
-  this proof cannot yet show a real LAN client's traffic surviving a WAN
-  swap end-to-end, only that the control loop driving the swap is real. That
-  is the next piece (see the open item this file's "AP bring-up" entry
-  doesn't cover either): a real fabric process, a real WireGuard tunnel, and
-  a real download surviving real WAN chaos — closing the exact gap the
-  `appliance/tests/qemu/` ADR-019 packet-routing entry above left open,
-  under conditions (real systemd, real HAL, real USB WAN discovery) that
-  entry never had.
 - Real `brcmfmac`/CYW43438, real RF, real RNDIS-tethering detection, and
   real Wi-Fi-as-WAN remain untested — same caveats as the AP bring-up entry.
 
@@ -213,9 +202,9 @@ client's 802.11 association does not drop across the whole chaos window
 this is a CI proof of the control loop's reaction to real WAN chaos, not a
 new production code path with its own fallback.
 
-**Next step:** add the real fabric + tunnel + routing leg described above;
-watch a handful of real CI runs to see whether `primary_switches_observed`
-is reliably nonzero under this chaos profile, and if so, assert it.
+**Next step:** watch a handful of real CI runs to see whether
+`primary_switches_observed` is reliably nonzero under this chaos profile,
+and if so, assert it.
 
 **History:**
 - 2026-08-07 — built in direct response to feedback that the AP bring-up
@@ -223,6 +212,20 @@ is reliably nonzero under this chaos profile, and if so, assert it.
   discovery, failover, and eventually routing) and that a single screenshot
   isn't "comprehensive." Reuses `appliance/tests/qemu/chaos_wan.sh` verbatim
   against real taps in the new real-systemd guest.
+- 2026-08-07 — the first real run of this proof surfaced that WAN atomics
+  never leave `UNUSED` on their own (`wifucked.discovery` deliberately never
+  auto-promotes — a user's own choice, made once from the dashboard) — the
+  allocator legitimately had nothing to allocate, so "0 disconnects" and "0
+  switches" proved less than the report implied. Extended the same run to
+  call the real `POST /api/atomics/<id>/mode` endpoint itself (standing in
+  for that one-time user action) and added a real fabric
+  ([`fabric/`](../fabric/), unmodified, run directly on the CI host — this
+  runner has real kernel WireGuard support, unlike the constrained sandbox
+  the ADR-019 packet-routing proof above was built in) plus a real "Internet"
+  stand-in reachable only through it, so a real LAN client's real download
+  now has to survive the same real WAN chaos end to end. Not yet confirmed
+  by a passing CI run at the time this entry was written — see this test's
+  own CI history for the current state.
 
 ---
 
@@ -437,6 +440,37 @@ imposed don't apply and a real `tcpdump` can watch the packet directly.
   independent of the ADR-019 design itself. The final round-trip was not
   achieved; every other claim above was independently confirmed against
   live kernel state, not inferred.
+- 2026-08-07 — the real fabric/tunnel e2e proof (PR #48,
+  `18_tunnel_download_survives_chaos`) hit the identical symptom this
+  entry's QEMU proof left unresolved: a live WireGuard handshake, a
+  correct `ip route get` resolution to `wg0`, a correct NAT rule — and
+  `internet-httpd.log` (the real HTTP server standing in for "the
+  Internet") receiving zero requests for the full run (backlog item 16).
+  Root-caused, not just re-observed: GitHub-hosted runners have `dockerd`
+  running by default, and `dockerd` sets the host's `FORWARD` chain policy
+  to `DROP` the moment it enables IP forwarding for its own bridge
+  networks (moby/moby#50566, Debian bug #865975) — independent of
+  anything this test does, and invisible to every check the earlier QEMU
+  proof ran (`ip route get`, `allowed-ips`, `nft list ruleset` all inspect
+  routing/NAT/crypto state, none of them inspect a *separate* netfilter
+  hook's filtering policy). This explains why the QEMU proof's "artifact
+  of the sandbox" hypothesis was half right: the sandbox-specific gap
+  wasn't `AF_PACKET`/`tcpdump` availability, it was a Docker-managed host
+  firewall default neither proof was built to check for. Confirms this is
+  a real, environment-triggered gap, not an ADR-019 design defect — fixed
+  for the CI harness in the same PR (explicit `iptables -I FORWARD`
+  accepts for `wg0`/`veth-inet`/`tap-wan1`/`tap-wan2`, inserted into the
+  same chain `dockerd` set the policy on, not a competing chain — a
+  competing chain's `accept` does not override another chain's `drop` for
+  the same packet at the same netfilter hook). **Still open:** whether
+  production deployments of the fabric hit the same gap depends on how
+  it's actually run (a `--network host` container, or colocated with
+  another Docker workload on the same box, would; a container on its own
+  bridge network generally wouldn't, since Docker's own per-container
+  rules already permit that traffic) — that's a deployment-configuration
+  question, not something this CI-harness-scoped fix resolves, and needs
+  its own decision before shipping if the fabric's real deployment story
+  involves host networking.
 
 ### Interim single-hotspot default (ADR-020)
 

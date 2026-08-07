@@ -119,6 +119,20 @@ fi
 
 cat > /etc/sysctl.d/90-wifucked.conf <<'EOF'
 net.ipv4.ip_forward=1
+# `ip_forward=1` (conf.all.forwarding) only synchronizes onto interfaces that
+# already exist at the moment it's applied (boot) — wg0 doesn't exist yet at
+# that point, since `wifucked.tunnel` creates it much later, at runtime, the
+# first time it attaches to the fabric. Without this, wg0 inherits whatever
+# conf.default.forwarding's stock value is (0) instead, and LAN client
+# traffic marked and routed to wg0 gets silently dropped before it ever
+# reaches the tunnel — found the same way `appliance/tests/qemu/
+# fabric_guest_init.sh`'s comment already documents for the fabric side of
+# this exact tunnel (NAT and the route were both already correct there too;
+# nothing forwarded until this was added), but never carried over to this,
+# the real image's own provisioning script, until a real e2e run
+# (docs/backlog/traffic-blockers.md item 16) caught the appliance side of
+# the identical gap.
+net.ipv4.conf.default.forwarding=1
 net.ipv6.conf.all.forwarding=1
 # The appliance holds multiple default routes; strict reverse-path filtering
 # drops replies that arrive on a different WAN than the request left by.

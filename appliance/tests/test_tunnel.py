@@ -286,6 +286,14 @@ def test_attach_succeeds_and_configures_the_interface(monkeypatch, tmp_path):
     assert status.server is not None
     assert status.server.public_key == "FABRICKEY="
 
+    # Item 16 (docs/backlog/traffic-blockers.md): a real e2e run found
+    # forwarding off at runtime despite setup_rpi.sh's own sysctl.d file
+    # containing the right values -- whatever applies /etc/sysctl.d/ at
+    # boot did not reliably do so. Ensure forwarding directly here instead
+    # of trusting a boot-time file, every time the tunnel is configured.
+    assert ["sysctl", "-w", "net.ipv4.ip_forward=1"] in responder.calls
+    assert ["sysctl", "-w", "net.ipv4.conf.wg0.forwarding=1"] in responder.calls
+
 
 def test_attach_fails_when_device_key_missing(monkeypatch, tmp_path):
     _install_http(
