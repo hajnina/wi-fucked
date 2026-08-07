@@ -539,6 +539,28 @@ INTERNET_URL="$(python3 -c "import json; print(json.load(open('${FABRIC_CFG}'))[
 EXPECTED_SHA256="$(python3 -c "import json; print(json.load(open('${FABRIC_CFG}'))['payload_sha256'])")"
 DOWNLOAD_FILE="${RESULTS}/downloaded_payload.bin"
 DOWNLOAD_LOG="${RESULTS}/logs/download_through_tunnel.log"
+
+# Item 16 (docs/backlog/traffic-blockers.md): wg0's own "sent" byte counter
+# has stayed suspiciously small and roughly constant across every failing
+# run — consistent with handshake+keepalive overhead alone, not a real SYN
+# retransmitted repeatedly over 130s. Every fabric-host-side diagnostic
+# (routing, NAT, FORWARD chain, forwarding sysctls, rp_filter, a live packet
+# capture, WireGuard's own dynamic debug log) has come back clean, which
+# points back to this side: does the client's marked SYN actually leave
+# wlan0 and get encrypted onto wg0 at all? Capture both to find out instead
+# of continuing to infer it from wg0's aggregate counters.
+# The Internet stand-in's fixed address (run_e2e_ap_test.sh's own
+# INTERNET_NS_ADDR constant) — parsed out of INTERNET_URL rather than
+# hard-coded twice, so the two scripts can't silently drift apart.
+INTERNET_HOST="$(python3 -c "from urllib.parse import urlparse; print(urlparse('${INTERNET_URL}').hostname)")"
+apt-get install -y -qq tcpdump > /dev/null 2>&1 || true
+tcpdump -i wlan0 -nn -w "${RESULTS}/logs/wlan0.pcap" "host ${INTERNET_HOST}" \
+    > "${RESULTS}/logs/tcpdump-wlan0.log" 2>&1 &
+TCPDUMP_WLAN0_PID=$!
+tcpdump -i wg0 -nn -w "${RESULTS}/logs/wg0.pcap" \
+    > "${RESULTS}/logs/tcpdump-wg0.log" 2>&1 &
+TCPDUMP_WG0_PID=$!
+
 ip netns exec "${CLIENT_NS}" curl -sS --max-time "${CHAOS_DURATION_S}" \
     -o "${DOWNLOAD_FILE}" "${INTERNET_URL}" > "${DOWNLOAD_LOG}" 2>&1 &
 DOWNLOAD_PID=$!
@@ -631,6 +653,12 @@ t0="$(now)"
 wait "${DOWNLOAD_PID}" 2> /dev/null
 DOWNLOAD_RC=$?
 ACTUAL_SHA256="$(sha256sum "${DOWNLOAD_FILE}" 2> /dev/null | awk '{print $1}')"
+
+# SIGTERM, not -9, so both pcaps get to flush and close before being read.
+kill "${TCPDUMP_WLAN0_PID}" "${TCPDUMP_WG0_PID}" 2> /dev/null || true
+wait "${TCPDUMP_WLAN0_PID}" "${TCPDUMP_WG0_PID}" 2> /dev/null || true
+tcpdump -r "${RESULTS}/logs/wlan0.pcap" -nn -vvv > "${RESULTS}/logs/wlan0.txt" 2>&1 || true
+tcpdump -r "${RESULTS}/logs/wg0.pcap" -nn -vvv > "${RESULTS}/logs/wg0.txt" 2>&1 || true
 if [ "${DOWNLOAD_RC}" -ne 0 ]; then
     # Item 16 (docs/backlog/traffic-blockers.md): wg show alone has already
     # shown a genuine handshake with byte counts too small to be the actual
