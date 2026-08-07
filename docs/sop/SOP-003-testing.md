@@ -73,21 +73,27 @@ requirement better than a ticket does.
 (`run_all_tests.sh`, what every PR must pass). It does not mean this repo may
 never verify something a mock cannot: whether real `hostapd` accepts a
 generated config, whether a real WireGuard handshake completes, whether real
-`nft` marking is syntactically valid. Those need a real kernel network stack,
-which needs root — [`appliance/tests/qemu/`](../../appliance/tests/qemu/)
-(full guest kernels, for WireGuard/CAKE/nftables) and
-[`appliance/tests/e2e/`](../../appliance/tests/e2e/) (network namespaces +
-`mac80211_hwsim`, for hostapd/dnsmasq/the dashboard) both exist for exactly
-this. They are not exempt from being trustworthy: each documents, in its own
-README, precisely what a passing run confirms and what it doesn't (usually:
-real Linux kernel networking, but not real Pi hardware/firmware/RF). Keep
-that distinction explicit rather than letting a green root-requiring proof
-read as "confirmed on hardware" — see
+`nft` marking is syntactically valid, whether real hostapd/systemd-networkd/
+NetworkManager coexist the way the config assumes. Those need a real kernel
+network stack — and in the last case, a real systemd — which needs root:
+[`appliance/tests/qemu/`](../../appliance/tests/qemu/) (busybox guest
+kernels, for WireGuard/CAKE/nftables) and
+[`appliance/tests/e2e/`](../../appliance/tests/e2e/) (a full Debian QEMU
+guest with `mac80211_hwsim`, running the actual `setup_rpi.sh` and real
+systemd units — hostapd, dnsmasq, systemd-networkd, NetworkManager,
+`wifucked.service` with no `MOCK_HW`) both exist for exactly this. They are
+not exempt from being trustworthy: each documents, in its own README,
+precisely what a passing run confirms and what it doesn't (usually: real
+Linux kernel networking and real systemd service coexistence, but not real
+Pi hardware/firmware/RF). Keep that distinction explicit rather than letting
+a green root-requiring proof read as "confirmed on hardware" — see
 [`docs/active-tests.md`](../active-tests.md).
 
-`appliance/tests/e2e/`'s harness is light enough to run in CI on every PR (no
-kernel fetch, no initramfs build — see its own job in `ci.yml`); the heavier
-QEMU proofs under `appliance/tests/qemu/` are not currently wired into CI and
+`appliance/tests/e2e/`'s harness is wired into CI on every PR (see its own
+job in `ci.yml`) despite booting a full guest OS, because the packages it
+needs are cached and the boot itself is a couple of minutes, not the
+from-scratch kernel/initramfs build the heavier proofs under
+`appliance/tests/qemu/` require — those are not currently wired into CI and
 run manually, documented as such in `docs/active-tests.md`.
 
 ## Time is injected, never slept

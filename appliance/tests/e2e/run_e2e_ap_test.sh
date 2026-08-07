@@ -1,313 +1,158 @@
 #!/bin/bash
 #
-# The AP + dashboard E2E proof.
+# The AP + dashboard E2E proof — real QEMU, real systemd, real HAL.
 #
-# Boots the real hostapd, the real dnsmasq, and the real wifucked dashboard
-# (Daemon + Flask app, MOCK_HW=1 for the HAL only — SOP-003's standard,
-# required seam, not a shortcut specific to this test), wired to a real
-# kernel 802.11 stack via mac80211_hwsim: two virtual radios that exchange
-# genuine 802.11 management/data frames over a simulated medium (real
-# hostapd/wpa_supplicant/nl80211 code paths, no RF, no Raspberry Pi).
+# Boots a real Debian guest with QEMU and lets it run the actual
+# appliance/setup_rpi.sh (the real image-bake provisioning script) live,
+# which enables the actual systemd units — hostapd, dnsmasq,
+# systemd-networkd, NetworkManager with the real unmanaged-devices config,
+# wifucked-firstboot (the real firstboot.sh), and wifucked.service itself
+# with no MOCK_HW override, so it drives the real Linux HAL. A second
+# mac80211_hwsim radio, moved into its own network namespace inside the same
+# guest kernel, plays a real Wi-Fi client: real 802.11 association, a real
+# DHCP lease from the real dnsmasq, a real ping at the gateway, and a real
+# headless Chromium (Playwright) at the real dashboard.
 #
-# A second network namespace stands in for a phone or laptop: it associates
-# to the AP for real, gets a real DHCP lease from the real dnsmasq, pings the
-# gateway, and drives a real headless Chromium (Playwright) at the real
-# dashboard URL over that path — reproducing, end to end, the exact complaint
-# this test exists to catch: "I get an IP but I can't ping the gateway and I
-# can't open the setup interface."
+# This exists because an earlier version of this test (see git history)
+# short-circuited exactly the layers most likely to hide a real bug: it
+# called wifucked.lan's config-generating functions directly instead of
+# running firstboot.sh, hand-assigned the gateway address instead of letting
+# systemd-networkd apply it, and ran the daemon under MOCK_HW=1. All three of
+# those are gone here — see README.md's "what changed and why."
 #
-# See README.md in this directory for what this does and does not prove, and
-# docs/active-tests.md's "AP bring-up" entry for the real-hardware gap it
-# does not close (no real brcmfmac firmware, no real RF).
-#
-# Requires root (network namespaces, mac80211_hwsim, binding hostapd to a
-# real interface) — this is why it is not part of run_all_tests.sh (SOP-003)
-# and instead runs as its own CI job, same posture as appliance/tests/qemu/.
+# Requires root (QEMU networking is fine unprivileged, but network
+# namespaces on the host build the input images) plus qemu-system-x86_64,
+# genisoimage, mkfs.vfat (dosfstools), and mtools. See README.md.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
 
-NS_AP="wifucked-e2e-ap"
-NS_CLIENT="wifucked-e2e-client"
-GATEWAY="10.44.0.1"
-CHANNEL=6
-TOKEN="e2e-test-token-$$"
-TIMEOUT_S=20
-
-WORKDIR="$(mktemp -d /tmp/wifucked-e2e.XXXXXX)"
 RESULTS_DIR="${1:-${REPO_ROOT}/e2e-artifacts}"
-FRAGMENTS_DIR="${WORKDIR}/fragments"
-mkdir -p "${RESULTS_DIR}" "${FRAGMENTS_DIR}"
+mkdir -p "${RESULTS_DIR}"
 
-PYTHON="${WIFUCKED_E2E_PYTHON:-python3}"
-export PYTHONPATH="${REPO_ROOT}/appliance/src"
+WORKDIR="$(mktemp -d /tmp/wifucked-e2e-qemu.XXXXXX)"
+QEMU_TIMEOUT_S="${WIFUCKED_E2E_TIMEOUT_S:-1200}"
+export MTOOLS_SKIP_CHECK=1
 
-HOSTAPD_PID=""
-DNSMASQ_PID=""
-DAEMON_PID=""
-MODULE_LOADED_HERE=0
-OVERALL_FAIL=0
-
-log() { printf '[e2e] %s\n' "$1"; }
-
-fragment() {
-    # fragment <name> <pass|fail> <duration_s> <detail> [error]
-    local name="$1" outcome="$2" duration="$3" detail="$4" error="${5:-}"
-    "${PYTHON}" "${HERE}/write_fragment.py" \
-        --fragments-dir "${FRAGMENTS_DIR}" --name "${name}" "--${outcome}" \
-        --duration-s "${duration}" --detail "${detail}" --error "${error}"
-    if [ "${outcome}" = "fail" ]; then
-        OVERALL_FAIL=1
-        log "FAIL: ${name} — ${detail} ${error}"
-    else
-        log "PASS: ${name} — ${detail}"
-    fi
-}
+log() { printf '[e2e-host] %s\n' "$1"; }
 
 # shellcheck disable=SC2329  # invoked indirectly via `trap ... EXIT` below
 cleanup() {
-    log "cleaning up"
-    for pid in "${DAEMON_PID}" "${DNSMASQ_PID}" "${HOSTAPD_PID}"; do
-        [ -n "${pid}" ] && kill "${pid}" > /dev/null 2>&1 || true
-    done
-    sleep 1
-    for pid in "${DAEMON_PID}" "${DNSMASQ_PID}" "${HOSTAPD_PID}"; do
-        [ -n "${pid}" ] && kill -9 "${pid}" > /dev/null 2>&1 || true
-    done
-    ip netns del "${NS_CLIENT}" > /dev/null 2>&1 || true
-    ip netns del "${NS_AP}" > /dev/null 2>&1 || true
-    if [ "${MODULE_LOADED_HERE}" = "1" ]; then
-        rmmod mac80211_hwsim > /dev/null 2>&1 || true
+    if [ -n "${QEMU_PID:-}" ] && kill -0 "${QEMU_PID}" 2> /dev/null; then
+        log "qemu still running at cleanup; killing pid ${QEMU_PID}"
+        kill -9 "${QEMU_PID}" 2> /dev/null || true
     fi
     rm -rf "${WORKDIR}"
 }
 trap cleanup EXIT
 
-if [ "$(id -u)" -ne 0 ]; then
-    echo "run_e2e_ap_test.sh requires root (network namespaces, mac80211_hwsim, hostapd)" >&2
-    exit 1
-fi
+for bin in qemu-system-x86_64 genisoimage mkfs.vfat mcopy curl qemu-img; do
+    command -v "${bin}" > /dev/null || { echo "FATAL: ${bin} not installed" >&2; exit 1; }
+done
 
-command -v hostapd > /dev/null || { echo "FATAL: hostapd not installed" >&2; exit 1; }
-command -v dnsmasq > /dev/null || { echo "FATAL: dnsmasq not installed" >&2; exit 1; }
-command -v iw > /dev/null || { echo "FATAL: iw not installed" >&2; exit 1; }
+# --- base image (cached) -----------------------------------------------------
 
-# --- bring up two real 802.11 radios ----------------------------------------
+BASE_IMAGE="$("${HERE}/download_base_image.sh" | tail -n1)"
 
-t0=$(date +%s.%N)
-BEFORE_IFACES="$(iw dev | awk '/Interface/ {print $2}' | sort)"
-if ! grep -q '^mac80211_hwsim ' /proc/modules 2> /dev/null; then
-    modprobe mac80211_hwsim radios=2
-    MODULE_LOADED_HERE=1
+# --- build the three input disks --------------------------------------------
+
+log "building repo ISO (read-only /mnt/repo in the guest)"
+STAGE="${WORKDIR}/repo-stage"
+mkdir -p "${STAGE}"
+if command -v rsync > /dev/null; then
+    rsync -a --exclude='.git' --exclude='appliance/tests/e2e/.work' --exclude='appliance/tests/qemu/.work' \
+        "${REPO_ROOT}/" "${STAGE}/"
 else
-    log "mac80211_hwsim already loaded; reusing (radios may be >2)"
+    cp -r "${REPO_ROOT}/." "${STAGE}/"
+    rm -rf "${STAGE}/.git" "${STAGE}/appliance/tests/e2e/.work" "${STAGE}/appliance/tests/qemu/.work"
 fi
-sleep 1
-AFTER_IFACES="$(iw dev | awk '/Interface/ {print $2}' | sort)"
-mapfile -t NEW_IFACES < <(comm -13 <(echo "${BEFORE_IFACES}") <(echo "${AFTER_IFACES}"))
-t1=$(date +%s.%N)
+genisoimage -quiet -r -J -o "${WORKDIR}/repo.iso" "${STAGE}"
 
-if [ "${#NEW_IFACES[@]}" -lt 2 ]; then
-    fragment "01_hwsim_radios" fail "$(echo "${t1} - ${t0}" | bc)" \
-        "expected 2 new interfaces from mac80211_hwsim, got ${#NEW_IFACES[@]}" \
-        "iw dev after modprobe: ${AFTER_IFACES}"
-    exit 1
-fi
-AP_IFACE="${NEW_IFACES[0]}"
-CLIENT_IFACE="${NEW_IFACES[1]}"
-fragment "01_hwsim_radios" pass "$(echo "${t1} - ${t0}" | bc)" \
-    "ap=${AP_IFACE} client=${CLIENT_IFACE}"
+log "building cloud-init seed ISO"
+genisoimage -quiet -V cidata -J -r -o "${WORKDIR}/seed.img" \
+    "${HERE}/cloud-init/meta-data" "${HERE}/cloud-init/user-data"
 
-# --- split into two network namespaces --------------------------------------
+log "building results disk (blank FAT, 64MB)"
+dd if=/dev/zero of="${WORKDIR}/results.img" bs=1M count=64 status=none
+mkfs.vfat -F 32 -n RESULTS "${WORKDIR}/results.img" > /dev/null
 
-t0=$(date +%s.%N)
-ip netns add "${NS_AP}"
-ip netns add "${NS_CLIENT}"
-AP_PHY="$(iw dev "${AP_IFACE}" info | awk '/wiphy/ {print "phy"$2}')"
-CLIENT_PHY="$(iw dev "${CLIENT_IFACE}" info | awk '/wiphy/ {print "phy"$2}')"
-iw phy "${AP_PHY}" set netns name "${NS_AP}"
-iw phy "${CLIENT_PHY}" set netns name "${NS_CLIENT}"
-ip netns exec "${NS_AP}" ip link set lo up
-ip netns exec "${NS_CLIENT}" ip link set lo up
-ip netns exec "${NS_AP}" ip link set "${AP_IFACE}" up
-ip netns exec "${NS_CLIENT}" ip link set "${CLIENT_IFACE}" up
-t1=$(date +%s.%N)
-fragment "02_netns_split" pass "$(echo "${t1} - ${t0}" | bc)" \
-    "ap netns=${NS_AP} (${AP_PHY}/${AP_IFACE}), client netns=${NS_CLIENT} (${CLIENT_PHY}/${CLIENT_IFACE})"
+log "creating disposable OS overlay (backing file: ${BASE_IMAGE})"
+qemu-img create -f qcow2 -F qcow2 -b "${BASE_IMAGE}" "${WORKDIR}/os.qcow2" > /dev/null
 
-# --- render the real config (wifucked.lan, same calls as firstboot.sh) -----
+# --- boot ---------------------------------------------------------------------
 
-t0=$(date +%s.%N)
-CONF_DIR="${WORKDIR}/conf"
-if ! "${PYTHON}" "${HERE}/render_configs.py" \
-    --interface "${AP_IFACE}" --channel "${CHANNEL}" --lan-mode single \
-    --open-network --out-dir "${CONF_DIR}" > "${WORKDIR}/identity.json"; then
-    t1=$(date +%s.%N)
-    fragment "03_render_config" fail "$(echo "${t1} - ${t0}" | bc)" \
-        "wifucked.lan.hostapd_config()/dnsmasq_config() failed" "see ${WORKDIR}/identity.json"
-    exit 1
-fi
-SSID="$("${PYTHON}" -c "import json;print(json.load(open('${WORKDIR}/identity.json'))['ssid'])")"
-t1=$(date +%s.%N)
-fragment "03_render_config" pass "$(echo "${t1} - ${t0}" | bc)" "ssid=${SSID} (open, ADR-021 default)"
+ACCEL="tcg"
+[ -w /dev/kvm ] && ACCEL="kvm:tcg"
+log "booting (accel=${ACCEL}, timeout=${QEMU_TIMEOUT_S}s)"
 
-# --- start the real hostapd --------------------------------------------------
+qemu-system-x86_64 \
+    -machine "pc,accel=${ACCEL}" \
+    -cpu max \
+    -m 3072 \
+    -smp 2 \
+    -drive file="${WORKDIR}/os.qcow2",if=virtio,format=qcow2 \
+    -drive file="${WORKDIR}/seed.img",media=cdrom,if=ide \
+    -drive file="${WORKDIR}/repo.iso",media=cdrom,if=ide \
+    -drive file="${WORKDIR}/results.img",if=virtio,format=raw \
+    -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
+    -display none -serial "file:${WORKDIR}/console.log" -monitor none \
+    -no-reboot \
+    > "${WORKDIR}/qemu.log" 2>&1 &
+QEMU_PID=$!
 
-t0=$(date +%s.%N)
-ip netns exec "${NS_AP}" hostapd -B -P "${WORKDIR}/hostapd.pid" \
-    -f "${WORKDIR}/hostapd.log" "${CONF_DIR}/hostapd.conf"
-HOSTAPD_STARTED=0
-for _ in $(seq 1 "${TIMEOUT_S}"); do
-    if ip netns exec "${NS_AP}" hostapd_cli -i "${AP_IFACE}" -p /var/run/hostapd status \
-        2> /dev/null | grep -q "^state=ENABLED"; then
-        HOSTAPD_STARTED=1
+WAITED=0
+while kill -0 "${QEMU_PID}" 2> /dev/null; do
+    if [ "${WAITED}" -ge "${QEMU_TIMEOUT_S}" ]; then
+        log "TIMEOUT after ${QEMU_TIMEOUT_S}s; killing qemu (pid ${QEMU_PID})"
         break
     fi
-    sleep 1
+    sleep 5
+    WAITED=$((WAITED + 5))
 done
-HOSTAPD_PID="$(cat "${WORKDIR}/hostapd.pid" 2> /dev/null || true)"
-t1=$(date +%s.%N)
-if [ "${HOSTAPD_STARTED}" != "1" ]; then
-    fragment "04_hostapd_up" fail "$(echo "${t1} - ${t0}" | bc)" \
-        "hostapd did not reach state=ENABLED within ${TIMEOUT_S}s" "$(cat "${WORKDIR}/hostapd.log" 2> /dev/null)"
-    exit 1
-fi
-fragment "04_hostapd_up" pass "$(echo "${t1} - ${t0}" | bc)" "hostapd state=ENABLED, pid=${HOSTAPD_PID}"
-
-# --- gateway address (stands in for the networkd unit firstboot.sh writes) -
-
-ip netns exec "${NS_AP}" ip addr add "${GATEWAY}/24" dev "${AP_IFACE}"
-
-# --- start the real dnsmasq --------------------------------------------------
-
-t0=$(date +%s.%N)
-ip netns exec "${NS_AP}" dnsmasq --conf-file="${CONF_DIR}/dnsmasq.conf" \
-    --interface="${AP_IFACE}" --bind-interfaces --pid-file="${WORKDIR}/dnsmasq.pid" \
-    --log-facility="${WORKDIR}/dnsmasq.log"
-sleep 1
-DNSMASQ_PID="$(cat "${WORKDIR}/dnsmasq.pid" 2> /dev/null || true)"
-t1=$(date +%s.%N)
-if [ -z "${DNSMASQ_PID}" ] || ! kill -0 "${DNSMASQ_PID}" 2> /dev/null; then
-    fragment "05_dnsmasq_up" fail "$(echo "${t1} - ${t0}" | bc)" \
-        "dnsmasq did not stay running" "$(cat "${WORKDIR}/dnsmasq.log" 2> /dev/null)"
-    exit 1
-fi
-fragment "05_dnsmasq_up" pass "$(echo "${t1} - ${t0}" | bc)" "dnsmasq pid=${DNSMASQ_PID}"
-
-# --- start the real dashboard daemon ----------------------------------------
-
-t0=$(date +%s.%N)
-ip netns exec "${NS_AP}" env MOCK_HW=1 WIFUCKED_STATE_DIR="${WORKDIR}/state" PYTHONPATH="${PYTHONPATH}" \
-    "${PYTHON}" "${HERE}/e2e_daemon.py" --token "${TOKEN}" \
-    > "${WORKDIR}/daemon.log" 2>&1 &
-DAEMON_PID=$!
-DAEMON_UP=0
-for _ in $(seq 1 "${TIMEOUT_S}"); do
-    if ip netns exec "${NS_AP}" bash -c "echo > /dev/tcp/${GATEWAY}/8080" 2> /dev/null; then
-        DAEMON_UP=1
-        break
-    fi
-    sleep 1
-done
-t1=$(date +%s.%N)
-if [ "${DAEMON_UP}" != "1" ]; then
-    fragment "06_daemon_up" fail "$(echo "${t1} - ${t0}" | bc)" \
-        "dashboard never opened ${GATEWAY}:8080 within ${TIMEOUT_S}s" "$(tail -n 40 "${WORKDIR}/daemon.log")"
-    exit 1
-fi
-fragment "06_daemon_up" pass "$(echo "${t1} - ${t0}" | bc)" "listening on ${GATEWAY}:8080, pid=${DAEMON_PID}"
-
-# --- client: real association over the real 802.11 stack -------------------
-
-t0=$(date +%s.%N)
-ip netns exec "${NS_CLIENT}" iw dev "${CLIENT_IFACE}" connect "${SSID}"
-ASSOCIATED=0
-for _ in $(seq 1 "${TIMEOUT_S}"); do
-    if ip netns exec "${NS_CLIENT}" iw dev "${CLIENT_IFACE}" link | grep -q "^Connected to"; then
-        ASSOCIATED=1
-        break
-    fi
-    sleep 1
-done
-t1=$(date +%s.%N)
-if [ "${ASSOCIATED}" != "1" ]; then
-    fragment "07_client_associate" fail "$(echo "${t1} - ${t0}" | bc)" \
-        "client did not associate to ${SSID} within ${TIMEOUT_S}s" \
-        "$(ip netns exec "${NS_CLIENT}" iw dev "${CLIENT_IFACE}" link)"
-    exit 1
-fi
-fragment "07_client_associate" pass "$(echo "${t1} - ${t0}" | bc)" "associated to ${SSID}"
-
-# --- client: real DHCP lease from the real dnsmasq --------------------------
-
-t0=$(date +%s.%N)
-DHCP_BIN=""
-if command -v dhclient > /dev/null; then
-    DHCP_BIN="dhclient"
-    ip netns exec "${NS_CLIENT}" dhclient -1 -pf "${WORKDIR}/dhclient.pid" \
-        -lf "${WORKDIR}/dhclient.leases" "${CLIENT_IFACE}" > "${WORKDIR}/dhclient.log" 2>&1
-elif command -v udhcpc > /dev/null; then
-    DHCP_BIN="udhcpc"
-    ip netns exec "${NS_CLIENT}" udhcpc -i "${CLIENT_IFACE}" -n -q > "${WORKDIR}/dhclient.log" 2>&1
-fi
-CLIENT_IP="$(ip netns exec "${NS_CLIENT}" ip -4 -o addr show dev "${CLIENT_IFACE}" \
-    | awk '{print $4}' | cut -d/ -f1)"
-t1=$(date +%s.%N)
-if [ -z "${DHCP_BIN}" ]; then
-    fragment "08_dhcp_lease" fail "0" "no DHCP client installed (need dhclient or udhcpc)"
-    exit 1
-fi
-if [ -z "${CLIENT_IP}" ]; then
-    fragment "08_dhcp_lease" fail "$(echo "${t1} - ${t0}" | bc)" \
-        "no address on ${CLIENT_IFACE} after ${DHCP_BIN}" "$(cat "${WORKDIR}/dhclient.log")"
-    exit 1
-fi
-fragment "08_dhcp_lease" pass "$(echo "${t1} - ${t0}" | bc)" "${DHCP_BIN} leased ${CLIENT_IP}"
-
-# --- client: ping the gateway (the exact real-world complaint) -------------
-
-t0=$(date +%s.%N)
-PING_OUT="$(ip netns exec "${NS_CLIENT}" ping -c 4 -W 2 "${GATEWAY}" 2>&1)"
-PING_RC=$?
-t1=$(date +%s.%N)
-LOSS="$(echo "${PING_OUT}" | grep -oE '[0-9]+% packet loss' | grep -oE '^[0-9]+')"
-if [ "${PING_RC}" -ne 0 ] || [ "${LOSS:-100}" != "0" ]; then
-    fragment "09_ping_gateway" fail "$(echo "${t1} - ${t0}" | bc)" \
-        "ping ${GATEWAY} from client lost ${LOSS:-100}%" "${PING_OUT}"
+if kill -0 "${QEMU_PID}" 2> /dev/null; then
+    kill -9 "${QEMU_PID}" 2> /dev/null || true
+    TIMED_OUT=1
 else
-    RTT="$(echo "${PING_OUT}" | grep -oE 'rtt [^=]*= [^ ]*' || true)"
-    fragment "09_ping_gateway" pass "$(echo "${t1} - ${t0}" | bc)" "0% loss, ${RTT}"
+    TIMED_OUT=0
+fi
+wait "${QEMU_PID}" 2> /dev/null || true
+log "qemu exited after ~${WAITED}s (timed_out=${TIMED_OUT})"
+
+cp -f "${WORKDIR}/console.log" "${RESULTS_DIR}/console.log" 2> /dev/null || true
+
+# --- extract results ---------------------------------------------------------
+
+EXTRACT_DIR="${WORKDIR}/extracted"
+mkdir -p "${EXTRACT_DIR}"
+mcopy -s -i "${WORKDIR}/results.img" '::*' "${EXTRACT_DIR}/" 2> "${WORKDIR}/mcopy.log" || true
+if [ -d "${EXTRACT_DIR}" ]; then
+    cp -r "${EXTRACT_DIR}/." "${RESULTS_DIR}/" 2> /dev/null || true
 fi
 
-# --- client: real headless Chromium at the real dashboard URL --------------
-
-t0=$(date +%s.%N)
-PW_OUT_DIR="${RESULTS_DIR}/screenshots"
-mkdir -p "${PW_OUT_DIR}"
-if ip netns exec "${NS_CLIENT}" "${PYTHON}" "${HERE}/playwright_check.py" \
-    --url "http://${GATEWAY}:8080/" --token "${TOKEN}" --out-dir "${PW_OUT_DIR}" \
-    > "${WORKDIR}/playwright.log" 2>&1; then
-    t1=$(date +%s.%N)
-    fragment "10_dashboard_playwright" pass "$(echo "${t1} - ${t0}" | bc)" \
-        "$(tail -n 5 "${WORKDIR}/playwright.log" | tr '\n' ' ')"
-else
-    t1=$(date +%s.%N)
-    fragment "10_dashboard_playwright" fail "$(echo "${t1} - ${t0}" | bc)" \
-        "Playwright check failed" "$(cat "${WORKDIR}/playwright.log")"
+if [ ! -f "${RESULTS_DIR}/DONE" ]; then
+    # The guest never reached its own finish() — crashed, hung, or the boot
+    # itself never got far enough to mount the results disk. Whatever
+    # fragments exist (there may be none) get aggregated as-is below; this
+    # extra fragment makes the timeout/crash itself visible as a stage
+    # instead of the report silently having fewer rows than expected.
+    mkdir -p "${RESULTS_DIR}/fragments"
+    python3 "${HERE}/write_fragment.py" \
+        --fragments-dir "${RESULTS_DIR}/fragments" --name "00_guest_completed" --fail \
+        --duration-s "${WAITED}" \
+        --detail "guest never wrote DONE to the results disk (timed_out=${TIMED_OUT})" \
+        --error "$(tail -n 60 "${RESULTS_DIR}/console.log" 2> /dev/null)"
 fi
 
-# --- aggregate ---------------------------------------------------------------
-
-cp -f "${WORKDIR}"/*.log "${RESULTS_DIR}/" 2> /dev/null || true
-"${PYTHON}" "${HERE}/aggregate_report.py" --fragments-dir "${FRAGMENTS_DIR}" --out-dir "${RESULTS_DIR}"
+python3 "${HERE}/aggregate_report.py" \
+    --fragments-dir "${RESULTS_DIR}/fragments" --out-dir "${RESULTS_DIR}"
 REPORT_RC=$?
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     cat "${RESULTS_DIR}/report.md" >> "${GITHUB_STEP_SUMMARY}"
 fi
 
-if [ "${OVERALL_FAIL}" != "0" ] || [ "${REPORT_RC}" != "0" ]; then
+if [ "${REPORT_RC}" != "0" ]; then
     log "RESULT: FAIL — see ${RESULTS_DIR}/report.md"
     exit 1
 fi

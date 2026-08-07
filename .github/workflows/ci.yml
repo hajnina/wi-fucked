@@ -94,48 +94,43 @@ jobs:
       - name: Run tests
         run: ./run_all_tests.sh
 
-  # Real hostapd + real dnsmasq + real dashboard daemon, wired to a real
-  # kernel 802.11 stack via mac80211_hwsim (real association/DHCP frames, no
-  # RF, no Pi) and driven by a real headless Chromium (Playwright). Catches
-  # exactly the class of bug the unit/scenario suite above cannot: hostapd
-  # bringing up but a client being unable to actually reach the gateway or
-  # the setup dashboard. Needs root for network namespaces and binding
-  # hostapd to a real interface, so it runs as its own job rather than
-  # inside run_all_tests.sh (SOP-003) — see appliance/tests/e2e/README.md.
+  # Boots a real Debian guest under QEMU and runs the actual
+  # appliance/setup_rpi.sh (the real image-bake provisioning script) live,
+  # which brings up real hostapd, real dnsmasq, real systemd-networkd, real
+  # NetworkManager (with the real unmanaged-devices config), and
+  # wifucked.service itself with no MOCK_HW override — the real Linux HAL.
+  # mac80211_hwsim gives the guest a literal wlan0; a second radio in its own
+  # netns inside the same guest kernel plays a real Wi-Fi client: real
+  # association, a real DHCP lease, a real ping, and a real headless
+  # Chromium (Playwright) at the real dashboard. Catches exactly what the
+  # unit/scenario suite above cannot — hostapd up, but the OS-level
+  # networking or the dashboard unreachable — at the real config-and-service
+  # layer, not a mock of it. See appliance/tests/e2e/README.md. Needs root
+  # for QEMU/network-namespace setup on the host, so it runs as its own job
+  # rather than inside run_all_tests.sh (SOP-003).
   e2e-ap-dashboard:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install system dependencies
+      - name: Install QEMU + image-building tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y hostapd dnsmasq iw isc-dhcp-client
+          sudo apt-get install -y qemu-system-x86 qemu-utils genisoimage dosfstools mtools rsync
 
-      # A dedicated venv, not the system python3: Ubuntu 24.04's system python
-      # has Debian-managed packages (e.g. blinker, pulled in as a dependency
-      # of something else) with no pip RECORD metadata, so installing flask
-      # on top of it fails trying to uninstall/upgrade them. The test itself
-      # runs as root (network namespaces), so the venv is built as root too —
-      # both `ip netns exec ... python3` calls in run_e2e_ap_test.sh and this
-      # install step need to agree on the same interpreter.
-      - name: Install Python dependencies into an isolated venv
-        run: |
-          sudo python3 -m venv /opt/wifucked-e2e-venv
-          sudo /opt/wifucked-e2e-venv/bin/pip install --quiet \
-            -r appliance/tests/e2e/requirements.txt
-          sudo /opt/wifucked-e2e-venv/bin/playwright install --with-deps chromium
+      # Cached across runs — this is a ~300 MB base image download that never
+      # changes unless Debian ships a new bookworm point release.
+      - name: Cache the Debian base image
+        uses: actions/cache@v4
+        with:
+          path: appliance/tests/e2e/.work
+          key: wifucked-e2e-debian-bookworm-generic-amd64
 
       - name: Run the AP + dashboard E2E proof
         run: |
-          sudo env WIFUCKED_E2E_PYTHON=/opt/wifucked-e2e-venv/bin/python3 \
-            appliance/tests/e2e/run_e2e_ap_test.sh "${GITHUB_WORKSPACE}/e2e-artifacts"
+          sudo appliance/tests/e2e/run_e2e_ap_test.sh "${GITHUB_WORKSPACE}/e2e-artifacts"
 
-      - name: Upload E2E artifacts (report, screenshots, logs)
+      - name: Upload E2E artifacts (report, screenshots, console/service logs)
         if: always()
         uses: actions/upload-artifact@v4
         with:
