@@ -396,6 +396,25 @@ cp -f "${WORKDIR}/internet-httpd.log" "${RESULTS_DIR}/internet-httpd.log" 2> /de
     conntrack -L 2>&1
     echo "== host route lookup for the Internet stand-in =="
     ip route get "${INTERNET_NS_ADDR}" 2>&1
+    # ADR-019's own QEMU proof already found that net.ipv4.ip_forward=1
+    # (conf.all.forwarding) does not retroactively cover an interface's own
+    # per-interface forwarding flag for interfaces created after that write
+    # — the kernel's ip_forward() checks the INBOUND interface's own flag
+    # specifically, before netfilter's FORWARD table is ever consulted, so a
+    # 0 here silently drops the packet with zero evidence in any nft/iptables
+    # counter. A route now exists to wg0 and a real WG decrypt happens (item
+    # 16, capacity fix) but still zero forward-hook packets on wg0 or
+    # veth-inet — check exactly here before guessing again.
+    echo "== host per-interface forwarding flags =="
+    for f in /proc/sys/net/ipv4/conf/all/forwarding /proc/sys/net/ipv4/conf/default/forwarding \
+        /proc/sys/net/ipv4/conf/wg0/forwarding /proc/sys/net/ipv4/conf/veth-inet/forwarding \
+        /proc/sys/net/ipv4/conf/tap-wan1/forwarding /proc/sys/net/ipv4/conf/tap-wan2/forwarding; do
+        echo "${f}=$(cat "${f}" 2>&1)"
+    done
+    echo "== host per-interface rp_filter (fabric side, not just the guest) =="
+    for f in /proc/sys/net/ipv4/conf/*/rp_filter; do echo "${f}=$(cat "${f}" 2>&1)"; done
+    echo "== recent kernel drop-relevant log lines (martian, filter, etc.) =="
+    dmesg 2>&1 | tail -60
 } > "${RESULTS_DIR}/fabric-host-diagnostics.log" 2>&1 || true
 
 # --- extract results ---------------------------------------------------------
