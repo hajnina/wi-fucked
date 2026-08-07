@@ -67,6 +67,18 @@ else
     cp -r "${REPO_ROOT}/." "${STAGE}/"
     rm -rf "${STAGE}/.git" "${STAGE}/appliance/tests/e2e/.work" "${STAGE}/appliance/tests/qemu/.work"
 fi
+
+# The real application code isn't deployed by setup_rpi.sh (base provisioning
+# only) — on a real device it arrives as a separate OTA .wtf package applied
+# by the real update_script.sh (see .github/workflows/reusable_image_pipeline.yml:
+# bake runs setup_rpi.sh, then separately builds and applies a package the
+# same way). Build one with the repo's own real packaging script so the guest
+# can apply it the same real way — see guest/e2e_driver.sh's "deploy_package"
+# stage.
+log "building the real OTA package (scripts/build_package.sh)"
+mkdir -p "${STAGE}/e2e-package"
+"${REPO_ROOT}/scripts/build_package.sh" "0.0.0-e2e" "${STAGE}/e2e-package/wifucked.wtf"
+
 genisoimage -quiet -r -J -o "${WORKDIR}/repo.iso" "${STAGE}"
 
 log "building cloud-init seed ISO"

@@ -154,11 +154,35 @@ if ! env REPO="${APPLIANCE_DIR}" bash "${APPLIANCE_DIR}/setup_rpi.sh"; then
 fi
 fragment "03_setup_rpi" pass "${t0}" "real setup_rpi.sh completed (packages installed, real systemd units enabled)"
 
+# setup_rpi.sh only lays down base provisioning (packages, units, config) —
+# on a real device the actual wifucked Python package arrives separately, as
+# an OTA .wtf package applied by the real update_script.sh (confirmed against
+# .github/workflows/reusable_image_pipeline.yml: the image bake runs
+# setup_rpi.sh, then separately builds and applies a package the same way).
+# Skipping this step is exactly how the first version of this stage failed:
+# firstboot.sh ran but `python3 -c "import wifucked"` had nothing to import.
+t0="$(now)"
+mkdir -p /tmp/wifucked-e2e-pkg
+if ! (cd /tmp/wifucked-e2e-pkg && unzip -qo "${REPO}/e2e-package/wifucked.wtf" \
+    && chmod +x update.sh && ./update.sh); then
+    fragment "04_deploy_package" fail "${t0}" \
+        "the real update_script.sh (OTA installer) failed to deploy the wifucked package" \
+        "$(tail -n 100 /tmp/wifucked-e2e-pkg/*.log 2> /dev/null)"
+    finish 1
+fi
+if [ ! -f /opt/wifucked/current/src/wifucked/__init__.py ]; then
+    fragment "04_deploy_package" fail "${t0}" \
+        "update.sh ran but /opt/wifucked/current/src/wifucked is not there" \
+        "$(ls -la /opt/wifucked/current 2> /dev/null; ls -la /opt/wifucked/versions 2> /dev/null)"
+    finish 1
+fi
+fragment "04_deploy_package" pass "${t0}" "real update_script.sh deployed the real wifucked package to /opt/wifucked/current"
+
 t0="$(now)"
 python3 -m venv /opt/wifucked-e2e-venv
 /opt/wifucked-e2e-venv/bin/pip install --quiet -r "${REPO}/appliance/tests/e2e/requirements.txt"
 /opt/wifucked-e2e-venv/bin/playwright install --with-deps chromium > "${RESULTS}/logs/playwright-install.log" 2>&1
-fragment "04_playwright_install" pass "${t0}" "isolated venv, chromium installed"
+fragment "05_playwright_install" pass "${t0}" "isolated venv, chromium installed"
 
 # --- phase: start the real services in the real order -----------------------
 
@@ -167,16 +191,16 @@ systemctl daemon-reload
 systemctl restart NetworkManager
 systemctl start wifucked-bootcount.service
 if ! systemctl start wifucked-firstboot.service; then
-    fragment "05_firstboot" fail "${t0}" "wifucked-firstboot.service (real firstboot.sh) failed" \
+    fragment "06_firstboot" fail "${t0}" "wifucked-firstboot.service (real firstboot.sh) failed" \
         "$(journalctl -u wifucked-firstboot --no-pager -n 100)"
     finish 1
 fi
 if [ ! -f /etc/hostapd/hostapd.conf ]; then
-    fragment "05_firstboot" fail "${t0}" "firstboot.sh ran but /etc/hostapd/hostapd.conf was not written" ""
+    fragment "06_firstboot" fail "${t0}" "firstboot.sh ran but /etc/hostapd/hostapd.conf was not written" ""
     finish 1
 fi
 SSID="$(grep -m1 '^ssid=' /etc/hostapd/hostapd.conf | cut -d= -f2-)"
-fragment "05_firstboot" pass "${t0}" "real firstboot.sh generated identity, ssid=${SSID}"
+fragment "06_firstboot" pass "${t0}" "real firstboot.sh generated identity, ssid=${SSID}"
 
 t0="$(now)"
 systemctl restart systemd-networkd
@@ -193,11 +217,11 @@ for _ in $(seq 1 "${TIMEOUT_S}"); do
     sleep 1
 done
 if [ "${HOSTAPD_UP}" != "1" ]; then
-    fragment "06_hostapd_up" fail "${t0}" "real hostapd (systemd unit) did not reach state=ENABLED within ${TIMEOUT_S}s" \
+    fragment "07_hostapd_up" fail "${t0}" "real hostapd (systemd unit) did not reach state=ENABLED within ${TIMEOUT_S}s" \
         "$(journalctl -u hostapd --no-pager -n 100)"
     finish 1
 fi
-fragment "06_hostapd_up" pass "${t0}" "real hostapd.service state=ENABLED"
+fragment "07_hostapd_up" pass "${t0}" "real hostapd.service state=ENABLED"
 
 t0="$(now)"
 GW_UP=0
@@ -212,12 +236,12 @@ if [ "${GW_UP}" != "1" ]; then
     # This is the real bug report reproduced at the OS-config layer: hostapd
     # up, but nothing gave wlan0 its gateway address (systemd-networkd not
     # applying the generated .network unit, or NetworkManager fighting it).
-    fragment "07_gateway_address" fail "${t0}" \
+    fragment "08_gateway_address" fail "${t0}" \
         "no ${GATEWAY} address on wlan0 within ${TIMEOUT_S}s (real systemd-networkd applying the real generated .network unit)" \
         "$(ip -4 addr show dev wlan0; echo ---; networkctl status wlan0 2>&1; echo ---; journalctl -u systemd-networkd --no-pager -n 100)"
     finish 1
 fi
-fragment "07_gateway_address" pass "${t0}" "wlan0 has ${GATEWAY} via real systemd-networkd"
+fragment "08_gateway_address" pass "${t0}" "wlan0 has ${GATEWAY} via real systemd-networkd"
 
 t0="$(now)"
 API_TOKEN=""
@@ -233,12 +257,12 @@ for _ in $(seq 1 "${TIMEOUT_S}"); do
     sleep 1
 done
 if [ "${DASH_UP}" != "1" ] || [ -z "${API_TOKEN}" ]; then
-    fragment "08_dashboard_up" fail "${t0}" \
+    fragment "09_dashboard_up" fail "${t0}" \
         "real wifucked.service dashboard did not open ${GATEWAY}:8080 (real HAL, no MOCK_HW) within ${TIMEOUT_S}s" \
         "$(journalctl -u wifucked --no-pager -n 150)"
     finish 1
 fi
-fragment "08_dashboard_up" pass "${t0}" "real dashboard listening on ${GATEWAY}:8080"
+fragment "09_dashboard_up" pass "${t0}" "real dashboard listening on ${GATEWAY}:8080"
 
 # --- phase: real client, from inside the guest ------------------------------
 
@@ -253,22 +277,22 @@ for _ in $(seq 1 "${TIMEOUT_S}"); do
     sleep 1
 done
 if [ "${ASSOCIATED}" != "1" ]; then
-    fragment "09_client_associate" fail "${t0}" "client did not associate to ${SSID} within ${TIMEOUT_S}s" \
+    fragment "10_client_associate" fail "${t0}" "client did not associate to ${SSID} within ${TIMEOUT_S}s" \
         "$(ip netns exec "${CLIENT_NS}" iw dev "${CLIENT_RAW}" link)"
     finish 1
 fi
-fragment "09_client_associate" pass "${t0}" "real 802.11 association to ${SSID}"
+fragment "10_client_associate" pass "${t0}" "real 802.11 association to ${SSID}"
 
 t0="$(now)"
 ip netns exec "${CLIENT_NS}" dhclient -1 -pf /run/e2e-dhclient.pid -lf /run/e2e-dhclient.leases "${CLIENT_RAW}" \
     > "${RESULTS}/logs/dhclient.log" 2>&1
 CLIENT_IP="$(ip netns exec "${CLIENT_NS}" ip -4 -o addr show dev "${CLIENT_RAW}" | awk '{print $4}' | cut -d/ -f1)"
 if [ -z "${CLIENT_IP}" ]; then
-    fragment "10_dhcp_lease" fail "${t0}" "no address on ${CLIENT_RAW} after dhclient (real dnsmasq)" \
+    fragment "11_dhcp_lease" fail "${t0}" "no address on ${CLIENT_RAW} after dhclient (real dnsmasq)" \
         "$(cat "${RESULTS}/logs/dhclient.log")"
     finish 1
 fi
-fragment "10_dhcp_lease" pass "${t0}" "real dnsmasq leased ${CLIENT_IP}"
+fragment "11_dhcp_lease" pass "${t0}" "real dnsmasq leased ${CLIENT_IP}"
 
 # --- the exact real-world complaint this proof exists to catch --------------
 
@@ -277,9 +301,9 @@ PING_OUT="$(ip netns exec "${CLIENT_NS}" ping -c 4 -W 2 "${GATEWAY}" 2>&1)"
 PING_RC=$?
 LOSS="$(echo "${PING_OUT}" | grep -oE '[0-9]+% packet loss' | grep -oE '^[0-9]+')"
 if [ "${PING_RC}" -ne 0 ] || [ "${LOSS:-100}" != "0" ]; then
-    fragment "11_ping_gateway" fail "${t0}" "ping ${GATEWAY} from a real associated client lost ${LOSS:-100}%" "${PING_OUT}"
+    fragment "12_ping_gateway" fail "${t0}" "ping ${GATEWAY} from a real associated client lost ${LOSS:-100}%" "${PING_OUT}"
 else
-    fragment "11_ping_gateway" pass "${t0}" "0% loss $(echo "${PING_OUT}" | grep -oE 'rtt [^=]*=[^ ]*')"
+    fragment "12_ping_gateway" pass "${t0}" "0% loss $(echo "${PING_OUT}" | grep -oE 'rtt [^=]*=[^ ]*')"
 fi
 
 t0="$(now)"
@@ -288,9 +312,9 @@ if ip netns exec "${CLIENT_NS}" /opt/wifucked-e2e-venv/bin/python3 \
     "${REPO}/appliance/tests/e2e/playwright_check.py" \
     --url "http://${GATEWAY}:8080/" --token "${API_TOKEN}" --out-dir "${RESULTS}/screenshots" \
     > "${RESULTS}/logs/playwright.log" 2>&1; then
-    fragment "12_dashboard_playwright" pass "${t0}" "$(tail -n 5 "${RESULTS}/logs/playwright.log" | tr '\n' ' ')"
+    fragment "13_dashboard_playwright" pass "${t0}" "$(tail -n 5 "${RESULTS}/logs/playwright.log" | tr '\n' ' ')"
 else
-    fragment "12_dashboard_playwright" fail "${t0}" "real headless Chromium could not load the real dashboard" \
+    fragment "13_dashboard_playwright" fail "${t0}" "real headless Chromium could not load the real dashboard" \
         "$(cat "${RESULTS}/logs/playwright.log")"
 fi
 
