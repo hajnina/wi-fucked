@@ -31,6 +31,10 @@ See [SOP-007](../sop/SOP-007-architectural-decisions.md).
 | [017](ADR-017-conventional-commits.md) | Conventional commits mandatory and CI-enforced | Accepted |
 | [018](ADR-018-main-release-channel.md) | Main is the sole release channel | Accepted |
 | [019](ADR-019-lan-egress-through-the-tunnel.md) | LAN client egress routes through the tunnel, not the WAN directly | Accepted |
+| [020](ADR-020-interim-single-hotspot.md) | Interim default: one hotspot, no Wi-Fi WAN, until the radio spike lands | Accepted |
+| [021](ADR-021-open-network-on-first-boot.md) | Open network on first boot | Accepted |
+| [022](ADR-022-automatic-interface-roles.md) | Interfaces enable themselves; the user only chooses main vs. backup | Accepted |
+| [023](ADR-023-lan-out-port-role.md) | LAN-out ports get a role, not a mode, and a background pipeline decides it | Accepted |
 
 ⚠ — rests on driver behaviour that is expected but **not yet verified on
 hardware**. Expect superseding ADRs once [`../radio-spike.md`](../radio-spike.md)

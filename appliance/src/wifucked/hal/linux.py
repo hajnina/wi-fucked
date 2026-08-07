@@ -11,6 +11,7 @@ See docs/radio-spike.md — do not guess here.
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 import subprocess
 import time
@@ -20,6 +21,8 @@ from typing import ClassVar
 from wifucked.hal.base import (
     ApHal,
     ApStatus,
+    DhcpHal,
+    DhcpLease,
     Hal,
     LedHal,
     NetHal,
@@ -533,6 +536,220 @@ def _net_interface_for(usb_entry: Path) -> tuple[str | None, bool]:
     return None, False
 
 
+_DNSMASQ_DROPIN_DIR = Path("/etc/dnsmasq.d")
+
+
+def _safe_ifname(ifname: str) -> str:
+    """Filesystem-safe form of an interface name, for a per-port config filename.
+
+    `ifname` is a *current fact*, never identity (ADR-002) — this filename is
+    regenerated on every classification run, not read back as persisted state,
+    so re-deriving it from a possibly-different `ifname` after re-enumeration
+    is exactly the intended behaviour, not a bug.
+    """
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", ifname)
+
+
+class LinuxDhcp(DhcpHal):
+    """Drives ``dhclient`` (client attempt), ``tcpdump`` (passive listen), and
+    a ``dnsmasq`` drop-in (server mode) directly — see ADR-023 for why each
+    step exists and why the passive-listen guard fails safe.
+
+    JUDGMENT CALL, flagged for hardware review (see PR body and
+    docs/active-tests.md): the exact tool invocations here (reading the
+    lease back via ``ip addr``/``ip route`` rather than parsing dhclient's
+    own lease-file format, matching ``tcpdump -v``'s decoded text for a
+    DHCP reply, a dnsmasq drop-in plus ``systemctl reload``) are written to
+    be correct for a Debian-family Linux userspace, not confirmed against
+    real hardware — no test in this repo can prove real DHCP wire behaviour
+    (SOP-003's real-kernel-proof tier is the only thing that could).
+    """
+
+    def attempt_client_lease(self, ifname: str, timeout_s: float) -> DhcpLease | None:
+        started = time.monotonic()
+        pidfile = f"/run/wifucked-dhclient-{_safe_ifname(ifname)}.pid"
+        leasefile = f"/run/wifucked-dhclient-{_safe_ifname(ifname)}.leases"
+        ok = (
+            _run(
+                [
+                    "dhclient",
+                    "-1",
+                    "-timeout",
+                    str(max(1, int(timeout_s))),
+                    "-pf",
+                    pidfile,
+                    "-lf",
+                    leasefile,
+                    ifname,
+                ],
+                timeout=timeout_s + 5.0,
+            )
+            is not None
+        )
+        lease = self._read_lease(ifname) if ok else None
+        duration_ms = int((time.monotonic() - started) * 1000)
+        log.info(
+            "DHCP client lease attempt",
+            extra={
+                "workflow": "lan_out_dhcp_client_attempt",
+                "state": "completed" if lease else "failed",
+                "intent": "find out whether an upstream network exists on this port",
+                "ifname": ifname,
+                "timeout_s": timeout_s,
+                "duration_ms": duration_ms,
+                "lease_obtained": lease is not None,
+                "reason": None if lease else "dhclient did not obtain a usable lease in time",
+            },
+        )
+        return lease
+
+    def _read_lease(self, ifname: str) -> DhcpLease | None:
+        out = _run(["ip", "-j", "addr", "show", "dev", ifname])
+        ip_addr: str | None = None
+        if out:
+            try:
+                for entry in json.loads(out):
+                    for addr in entry.get("addr_info", []):
+                        if addr.get("family") == "inet":
+                            ip_addr = addr.get("local")
+            except json.JSONDecodeError:
+                ip_addr = None
+        if not ip_addr:
+            return None
+        gateway = None
+        route_out = _run(["ip", "-j", "route", "show", "dev", ifname, "default"])
+        if route_out:
+            try:
+                routes = json.loads(route_out)
+                if routes:
+                    gateway = routes[0].get("gateway")
+            except json.JSONDecodeError:
+                gateway = None
+        return DhcpLease(ip=ip_addr, gateway=gateway)
+
+    def passive_listen_for_foreign_server(self, ifname: str, timeout_s: float) -> bool:
+        started = time.monotonic()
+        try:
+            done = subprocess.run(
+                [
+                    "timeout",
+                    str(max(1, int(timeout_s))),
+                    "tcpdump",
+                    "-i",
+                    ifname,
+                    "-n",
+                    "-l",
+                    "-v",
+                    "udp",
+                    "and",
+                    "(port",
+                    "67",
+                    "or",
+                    "port",
+                    "68)",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout_s + 10.0,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning(
+                "Could not run passive DHCP listen; assuming a server may be present",
+                extra={
+                    "workflow": "lan_out_passive_listen",
+                    "state": "failed",
+                    "intent": "never put a second DHCP server on a network this device doesn't own",
+                    "ifname": ifname,
+                    "timeout_s": timeout_s,
+                    "reason": "tcpdump could not be run",
+                    "error": str(exc),
+                },
+            )
+            # Fail safe: an unverifiable segment is treated the same as a
+            # segment where something answered. See ADR-022's Decision
+            # section and ADR-023 — a false "become a WAN source" costs
+            # nothing, a false "become a DHCP server" is actively harmful.
+            return True
+
+        # `tcpdump -v` decodes a BOOTP/DHCP reply as "BOOTP/DHCP, Reply" — a
+        # request from a client instead reads "BOOTP/DHCP, Request". Any
+        # reply seen on this segment came from something other than us (we
+        # are not running a server yet), so it is exactly the foreign-server
+        # signal this guard exists to catch. Matching decoded text rather
+        # than a stricter packet parse is a deliberate, documented judgement
+        # call — see the class docstring — and errs toward over-matching
+        # (ambiguous output reads as "heard something"), the safe direction.
+        heard = "BOOTP/DHCP, Reply" in (done.stdout + done.stderr)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        log.info(
+            "Passive DHCP listen completed",
+            extra={
+                "workflow": "lan_out_passive_listen",
+                "state": "completed",
+                "intent": "confirm nothing already serves DHCP here before becoming a server",
+                "ifname": ifname,
+                "timeout_s": timeout_s,
+                "duration_ms": duration_ms,
+                "foreign_server_heard": heard,
+            },
+        )
+        return heard
+
+    def start_server(self, ifname: str, subnet_third_octet: int, gateway: str) -> bool:
+        started = time.monotonic()
+        subnet = ".".join(gateway.split(".")[:3])
+        conf_path = _DNSMASQ_DROPIN_DIR / f"wifucked-lanout-{_safe_ifname(ifname)}.conf"
+        conf = (
+            "# Generated by wifucked's LAN-out DHCP-server fallback (ADR-023).\n"
+            "# ifname is a current fact about this atomic, not its identity (ADR-002) —\n"
+            "# this file is regenerated on every classification, never read back as state.\n"
+            f"interface={ifname}\n"
+            "bind-dynamic\n"
+            f"dhcp-range={subnet}.50,{subnet}.200,255.255.255.0,12h\n"
+            f"dhcp-option=3,{gateway}\n"
+            f"dhcp-option=6,{gateway}\n"
+        )
+        try:
+            _DNSMASQ_DROPIN_DIR.mkdir(parents=True, exist_ok=True)
+            conf_path.write_text(conf)
+        except OSError as exc:
+            log.error(
+                "Could not write dnsmasq drop-in for LAN-out port",
+                extra={
+                    "workflow": "lan_out_server_start",
+                    "state": "failed",
+                    "intent": "hand out stabilized internet on a bare, quiet wired port",
+                    "ifname": ifname,
+                    "reason": "could not write config file",
+                    "error": str(exc),
+                },
+            )
+            return False
+
+        # Tolerate "File exists" the same idempotent way enforce/ does for
+        # `ip rule add` — a re-classification of an already-serving port
+        # (e.g. after a daemon restart) must not treat the address already
+        # being there as a failure.
+        _run(["ip", "addr", "add", f"{gateway}/24", "dev", ifname])
+        reloaded = _run(["systemctl", "reload", "dnsmasq.service"]) is not None
+        duration_ms = int((time.monotonic() - started) * 1000)
+        log.info(
+            "LAN-out DHCP server start requested",
+            extra={
+                "workflow": "lan_out_server_start",
+                "state": "completed" if reloaded else "failed",
+                "intent": "hand out the same stabilized internet LAN clients get through the AP",
+                "ifname": ifname,
+                "gateway": gateway,
+                "subnet_third_octet": subnet_third_octet,
+                "duration_ms": duration_ms,
+                "reason": None if reloaded else "dnsmasq reload failed; config file was written",
+            },
+        )
+        return reloaded
+
+
 class LinuxNet(NetHal):
     def interfaces(self) -> dict[str, bool]:
         result: dict[str, bool] = {}
@@ -651,6 +868,7 @@ def build_linux_hal() -> Hal:
         net=LinuxNet(),
         led=LinuxLed(),
         system=LinuxSystem(),
+        dhcp=LinuxDhcp(),
         mocked=False,
         notes={"csa": "unverified until the radio spike reports — docs/radio-spike.md"},
     )

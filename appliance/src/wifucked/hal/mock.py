@@ -10,6 +10,8 @@ from __future__ import annotations
 from wifucked.hal.base import (
     ApHal,
     ApStatus,
+    DhcpHal,
+    DhcpLease,
     Hal,
     LedHal,
     NetHal,
@@ -145,6 +147,46 @@ class MockNet(NetHal):
         return {"wlan0": "b8:27:eb:00:00:01", "usb0": "b8:27:eb:00:00:02"}.get(ifname)
 
 
+class MockDhcp(DhcpHal):
+    """Scripted DHCP-attempt/passive-listen/server outcomes, per interface.
+
+    Every method defaults to the *conservative* outcome — no lease, a foreign
+    server heard — so a scenario that never configures this mock never
+    silently becomes a DHCP server by accident; tests opt in explicitly to
+    the "no upstream, segment is quiet" case that actually exercises the
+    LAN-out fallback.
+    """
+
+    def __init__(self) -> None:
+        #: ifname -> lease to hand back, or None for "no lease" (the default
+        #: for any ifname not in this dict).
+        self.leases: dict[str, DhcpLease | None] = {}
+        #: ifname -> whether a foreign DHCP server is heard. Defaults to True
+        #: (conservative) for any ifname not explicitly set to False.
+        self.foreign_heard: dict[str, bool] = {}
+        #: ifname -> whether start_server should report success. Defaults to
+        #: True; a test can force a failure to exercise that path.
+        self.server_start_ok: dict[str, bool] = {}
+        #: What actually got "started" — asserted on directly by tests.
+        self.servers_started: list[tuple[str, int, str]] = []
+        self.calls: list[tuple[str, str, float]] = []  # (method, ifname, timeout_s)
+
+    def attempt_client_lease(self, ifname: str, timeout_s: float) -> DhcpLease | None:
+        self.calls.append(("attempt_client_lease", ifname, timeout_s))
+        return self.leases.get(ifname)
+
+    def passive_listen_for_foreign_server(self, ifname: str, timeout_s: float) -> bool:
+        self.calls.append(("passive_listen_for_foreign_server", ifname, timeout_s))
+        return self.foreign_heard.get(ifname, True)
+
+    def start_server(self, ifname: str, subnet_third_octet: int, gateway: str) -> bool:
+        self.calls.append(("start_server", ifname, 0.0))
+        ok = self.server_start_ok.get(ifname, True)
+        if ok:
+            self.servers_started.append((ifname, subnet_third_octet, gateway))
+        return ok
+
+
 class MockLed(LedHal):
     def __init__(self) -> None:
         self.pattern = "off"
@@ -181,5 +223,6 @@ def build_mock_hal() -> Hal:
         net=MockNet(),
         led=MockLed(),
         system=MockSystem(),
+        dhcp=MockDhcp(),
         mocked=True,
     )

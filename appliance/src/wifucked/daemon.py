@@ -23,13 +23,14 @@ from __future__ import annotations
 import threading
 
 from wifucked.allocator import Allocation, Allocator, BackupState
-from wifucked.atomics import Health, Mode, Registry
+from wifucked.atomics import Health, Mode, PortRole, Registry
 from wifucked.clock import Clock, RealClock
 from wifucked.config import Config, release_info
 from wifucked.demand import CounterDemand, DemandEstimator, StaticDemand
 from wifucked.discovery import Discoverer
 from wifucked.enforce import Enforcer, LinuxEnforcer, MockEnforcer, render
 from wifucked.hal import Hal, build_hal
+from wifucked.lanout import LanOutClassifier
 from wifucked.logging import get_logger
 from wifucked.policy import profiles_for_lan_mode
 from wifucked.probe import LinuxProber, Prober, ScriptedProber, fold, quality_of
@@ -39,6 +40,49 @@ from wifucked.tunnel import MockTunnel, Tunnel, WireGuardTunnel
 from wifucked.watchdog import sd_notify
 
 log = get_logger("daemon")
+
+#: Fallback base if `LanConfig.address` is unparseable — matches `LanConfig`'s
+#: own default, so a malformed hand-edited config still boots (SOP-002:
+#: "the device must boot and serve its SSIDs with no configuration file at
+#: all" — a bad `lan.address` must degrade, not crash daemon construction).
+_DEFAULT_LAN_OUT_GATEWAY_PREFIX = "10.44"
+_DEFAULT_LAN_OUT_BASE_THIRD_OCTET = 0
+
+
+def _lan_out_subnet_base(address: str) -> tuple[str, int]:
+    """Derive the LAN-out subnet base from `LanConfig.address`, degrading to
+    a safe default rather than raising on a malformed hand-edited config.
+    """
+    octets = address.split(".")
+    if len(octets) != 4:
+        log.warning(
+            "Could not derive LAN-out subnet base from lan.address; using default",
+            extra={
+                "workflow": "daemon_init",
+                "state": "failed",
+                "intent": "pick a subnet range for wired ports that switch into DHCP-server mode",
+                "address": address,
+                "reason": "lan.address is not a dotted-quad",
+                "fallback_prefix": _DEFAULT_LAN_OUT_GATEWAY_PREFIX,
+            },
+        )
+        return _DEFAULT_LAN_OUT_GATEWAY_PREFIX, _DEFAULT_LAN_OUT_BASE_THIRD_OCTET
+    try:
+        third_octet = int(octets[2])
+    except ValueError:
+        log.warning(
+            "Could not derive LAN-out subnet base from lan.address; using default",
+            extra={
+                "workflow": "daemon_init",
+                "state": "failed",
+                "intent": "pick a subnet range for wired ports that switch into DHCP-server mode",
+                "address": address,
+                "reason": "third octet is not numeric",
+                "fallback_prefix": _DEFAULT_LAN_OUT_GATEWAY_PREFIX,
+            },
+        )
+        return _DEFAULT_LAN_OUT_GATEWAY_PREFIX, _DEFAULT_LAN_OUT_BASE_THIRD_OCTET
+    return f"{octets[0]}.{octets[1]}", third_octet
 
 
 class Daemon:
@@ -77,6 +121,22 @@ class Daemon:
             self.clock,
             wifi_scan_min_interval_s=config.loops.wifi_scan_min_interval_s,
             include_wifi_wan=config.lan.wan_uses_wifi,
+        )
+        #: DHCP-attempt/passive-listen/DHCP-server-fallback pipeline for
+        #: wired ports (ADR-023, implementing ADR-022's Decision). None when
+        #: disabled by config — every wired port then simply stays whatever
+        #: ADR-022's discovery default already set it to (Mode.NORMAL), with
+        #: no automatic reclassification to LAN_OUT ever happening.
+        gateway_prefix, base_third_octet = _lan_out_subnet_base(config.lan.address)
+        self.lan_out_classifier = (
+            LanOutClassifier(
+                dhcp_client_timeout_s=config.lan_out.dhcp_client_timeout_s,
+                passive_listen_timeout_s=config.lan_out.passive_listen_timeout_s,
+                gateway_prefix=gateway_prefix,
+                base_third_octet=base_third_octet,
+            )
+            if config.lan_out.enabled
+            else None
         )
 
         # Real, hardware-backed implementations when there is real hardware to
@@ -270,6 +330,7 @@ class Daemon:
 
     def _medium_loop(self) -> None:
         self.discover_once()
+        self._classify_lan_out_ports()
         self._measure()
 
         atomics = self.registry.all()
@@ -349,6 +410,22 @@ class Daemon:
 
     def discover_once(self) -> None:
         self.registry.observe(self.discoverer.discover(self.hal))
+
+    def _classify_lan_out_ports(self) -> None:
+        """Apply any DHCP-attempt/passive-listen pipeline outcomes that
+        finished since the last tick (ADR-023).
+
+        `LanOutClassifier.consider()` is non-blocking — the bounded
+        multi-second pipeline runs on its own background thread(s), never on
+        this loop thread — so this is cheap to call every medium tick even
+        though most calls apply nothing.
+        """
+        if self.lan_out_classifier is None:
+            return
+        for outcome in self.lan_out_classifier.consider(self.hal, self.registry.all()):
+            self.registry.set_role_and_mode(
+                outcome.atomic_id, outcome.role, outcome.mode, reason=outcome.reason
+            )
 
     def _measure(self) -> None:
         now = self.clock.now()
@@ -459,6 +536,7 @@ class Daemon:
                 "backup": sum(1 for a in atomics if a.mode is Mode.BACKUP),
                 "unused": sum(1 for a in atomics if a.mode is Mode.UNUSED),
                 "present": sum(1 for a in atomics if a.present),
+                "lan_out": sum(1 for a in atomics if a.role is PortRole.LAN_OUT),
             },
             "atomics": [a.to_dict() for a in atomics],
         }
