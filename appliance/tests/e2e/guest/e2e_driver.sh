@@ -143,6 +143,25 @@ apt-get install -y -qq iw > /dev/null
 CLIENT_PHY="$(cat "/sys/class/net/${CLIENT_RAW}/phy80211/name")"
 ip netns add "${CLIENT_NS}"
 iw phy "${CLIENT_PHY}" set netns name "${CLIENT_NS}"
+
+# `iw phy ... set netns` returns before the move is necessarily visible to a
+# subsequent `ip netns exec` in the same script (observed: an immediate
+# `ip link set` right after it can race the kernel/udev side of the move) —
+# poll briefly rather than assume it landed synchronously.
+MOVED=0
+for _ in $(seq 1 10); do
+    if ip netns exec "${CLIENT_NS}" test -e "/sys/class/net/${CLIENT_RAW}/phy80211"; then
+        MOVED=1
+        break
+    fi
+    sleep 1
+done
+if [ "${MOVED}" != "1" ]; then
+    fragment "02_iface_split" fail "${t0}" \
+        "${CLIENT_RAW}/${CLIENT_PHY} did not appear in netns ${CLIENT_NS} within 10s of the move" \
+        "root ns: $(ip link show 2>&1); ${CLIENT_NS} ns: $(ip netns exec "${CLIENT_NS}" ip link show 2>&1)"
+    finish 1
+fi
 ip netns exec "${CLIENT_NS}" ip link set lo up
 ip netns exec "${CLIENT_NS}" ip link set "${CLIENT_RAW}" up
 fragment "02_iface_split" pass "${t0}" \
@@ -277,6 +296,12 @@ fragment "09_dashboard_up" pass "${t0}" "real dashboard listening on ${GATEWAY}:
 # --- phase: real client, from inside the guest ------------------------------
 
 t0="$(now)"
+if ! ip netns exec "${CLIENT_NS}" test -e "/sys/class/net/${CLIENT_RAW}/phy80211"; then
+    fragment "10_client_associate" fail "${t0}" \
+        "${CLIENT_RAW} is gone from netns ${CLIENT_NS} by the time client association was attempted (it was there right after the phase-02 move)" \
+        "root ns: $(ip link show 2>&1); ${CLIENT_NS} ns: $(ip netns exec "${CLIENT_NS}" ip link show 2>&1); iw reg: $(iw reg get 2>&1)"
+    finish 1
+fi
 SCAN_OUT="$(ip netns exec "${CLIENT_NS}" iw dev "${CLIENT_RAW}" scan 2>&1)"
 ip netns exec "${CLIENT_NS}" iw dev "${CLIENT_RAW}" connect "${SSID}" 2>&1
 ASSOCIATED=0
