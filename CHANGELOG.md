@@ -1,3 +1,12 @@
+## v1.3.5 — 2026-08-07
+
+### docs
+- changelog for v1.3.4 [skip ci]
+
+### test
+- prove the real control loop survives two degrading WAN links (#44)
+
+
 ## v1.3.4 — 2026-08-06
 
 ### docs
