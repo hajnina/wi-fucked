@@ -288,7 +288,13 @@ t0="$(now)"
 systemctl restart systemd-networkd
 systemctl restart hostapd
 systemctl restart dnsmasq
-systemctl start wifucked.service
+# wifucked.service deliberately does NOT start here yet: its real Flask app
+# binds specifically to ${GATEWAY} (config.api_host, never 0.0.0.0), and
+# starting it in the same breath as systemd-networkd races the address
+# actually landing on wlan0 -- confirmed in a real CI run ("Cannot assign
+# requested address", crash-looping under Restart=always until the address
+# happened to appear first). Start it only once 08_gateway_address below has
+# confirmed the real address is actually there.
 
 HOSTAPD_UP=0
 for _ in $(seq 1 "${TIMEOUT_S}"); do
@@ -324,6 +330,8 @@ if [ "${GW_UP}" != "1" ]; then
     finish 1
 fi
 fragment "08_gateway_address" pass "${t0}" "wlan0 has ${GATEWAY} via real systemd-networkd"
+
+systemctl start wifucked.service
 
 t0="$(now)"
 API_TOKEN=""
@@ -473,9 +481,13 @@ fi
 
 TUNNEL_UP=0
 for _ in $(seq 1 "${TIMEOUT_S}"); do
+    # TunnelState (appliance/src/wifucked/tunnel/__init__.py) only has
+    # down/connecting/up/incompatible -- "connected" was never a real value
+    # here; this loop timed out for a full 45s on the first real run despite
+    # `wg show` on the guest already showing a genuine, fresh handshake.
     TSTATE="$(curl -s -u "wifucked:${API_TOKEN}" "http://${GATEWAY}:8080/api/state" \
         | python3 -c 'import json,sys; print(json.load(sys.stdin)["tunnel"]["state"])' 2> /dev/null)"
-    if [ "${TSTATE}" = "connected" ]; then
+    if [ "${TSTATE}" = "up" ]; then
         TUNNEL_UP=1
         break
     fi
@@ -483,11 +495,11 @@ for _ in $(seq 1 "${TIMEOUT_S}"); do
 done
 if [ "${TUNNEL_UP}" != "1" ]; then
     fragment "15_promote_wans" fail "${t0}" \
-        "real WireGuardTunnel never reached tunnel.state=connected within ${TIMEOUT_S}s of promoting real WAN atomics (last seen: ${TSTATE:-none})" \
+        "real WireGuardTunnel never reached tunnel.state=up within ${TIMEOUT_S}s of promoting real WAN atomics (last seen: ${TSTATE:-none})" \
         "$(journalctl -u wifucked --no-pager -n 150); wg: $(wg show 2>&1)"
     finish 1
 fi
-fragment "15_promote_wans" pass "${t0}" "promoted ${WAN_IDS//$'\n'/,} to NORMAL; real tunnel.state=connected"
+fragment "15_promote_wans" pass "${t0}" "promoted ${WAN_IDS//$'\n'/,} to NORMAL; real tunnel.state=up"
 
 # --- phase: real WAN chaos — the actual control loop reacting live ---------
 #
