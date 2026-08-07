@@ -91,6 +91,7 @@ cleanup() {
     [ -n "${DNSMASQ_WAN2_PID:-}" ] && kill "${DNSMASQ_WAN2_PID}" 2> /dev/null || true
     [ -n "${FABRIC_PID:-}" ] && kill "${FABRIC_PID}" 2> /dev/null || true
     [ -n "${INTERNET_HTTPD_PID:-}" ] && kill "${INTERNET_HTTPD_PID}" 2> /dev/null || true
+    [ -n "${TCPDUMP_PID:-}" ] && kill "${TCPDUMP_PID}" 2> /dev/null || true
     iptables -t nat -D POSTROUTING -s "${WAN1_SUBNET}.0/24" -o "${DEFAULT_IFACE:-eth0}" -j MASQUERADE 2> /dev/null || true
     iptables -t nat -D POSTROUTING -s "${WAN2_SUBNET}.0/24" -o "${DEFAULT_IFACE:-eth0}" -j MASQUERADE 2> /dev/null || true
     for fwd_if in wg0 veth-inet tap-wan1 tap-wan2; do
@@ -204,6 +205,20 @@ PYTHONUNBUFFERED=1 ip netns exec wifucked-e2e-internet python3 -m http.server "$
     --directory "${PAYLOAD_DIR}" --bind "${INTERNET_NS_ADDR}" \
     > "${WORKDIR}/internet-httpd.log" 2>&1 &
 INTERNET_HTTPD_PID=$!
+
+# Item 16 (docs/backlog/traffic-blockers.md): every diagnostic short of an
+# actual packet capture has now been checked and ruled out for this exact
+# failure (routing, NAT rule syntax, FORWARD chain policy, per-interface
+# forwarding sysctls, rp_filter, dmesg) while a real WireGuard decrypt still
+# happens and zero packets ever reach the FORWARD hook on wg0 or veth-inet.
+# `-i any` picks up interfaces that don't exist yet when tcpdump starts
+# (including wg0, created later by the fabric's own `ensure_ready()` on the
+# appliance's first registration) — starting it here, before the fabric
+# even runs, means the capture can't miss the moment wg0 first appears.
+tcpdump -i any -nn -w "${WORKDIR}/capture.pcap" \
+    "host ${INTERNET_HOST_ADDR} or host ${INTERNET_NS_ADDR}" \
+    > "${WORKDIR}/tcpdump.log" 2>&1 &
+TCPDUMP_PID=$!
 
 # --- the real fabric: real Flask app, real WireGuard, real NAT -------------
 #
@@ -374,6 +389,15 @@ cp -f "${WORKDIR}/chaos_wan.log" "${RESULTS_DIR}/chaos_wan.log" 2> /dev/null || 
 cp -f "${WORKDIR}"/dnsmasq-wan*.log "${RESULTS_DIR}/" 2> /dev/null || true
 cp -f "${WORKDIR}/fabric.log" "${RESULTS_DIR}/fabric.log" 2> /dev/null || true
 cp -f "${WORKDIR}/internet-httpd.log" "${RESULTS_DIR}/internet-httpd.log" 2> /dev/null || true
+
+# SIGTERM (not -9) so tcpdump gets to flush and close capture.pcap properly
+# before it's read — a killed-mid-write pcap can truncate or corrupt.
+if [ -n "${TCPDUMP_PID:-}" ] && kill -0 "${TCPDUMP_PID}" 2> /dev/null; then
+    kill "${TCPDUMP_PID}" 2> /dev/null || true
+    wait "${TCPDUMP_PID}" 2> /dev/null || true
+fi
+cp -f "${WORKDIR}/capture.pcap" "${RESULTS_DIR}/capture.pcap" 2> /dev/null || true
+tcpdump -r "${WORKDIR}/capture.pcap" -nn -vvv > "${RESULTS_DIR}/capture.txt" 2>&1 || true
 {
     echo "== host-side fabric wg0 =="
     wg show wg0 2>&1
