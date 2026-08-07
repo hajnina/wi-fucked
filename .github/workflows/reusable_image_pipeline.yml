@@ -307,6 +307,83 @@ jobs:
           docker cp "${CID}:/wifucked.img" "${{ steps.names.outputs.image }}"
           docker rm -f "${CID}"
 
+      # Everything above proves the image *contains* the right binaries
+      # (capability gate) and the right static config (anchor gate) — it has
+      # never proven the image actually *boots*. This boots the literal
+      # bytes this job is about to publish, under qemu-system-aarch64, and
+      # confirms wifucked.service reaches its own started state — the
+      # closest thing to "flash it and watch it come up" this pipeline can
+      # do without a real Pi. Real WiFi (brcmfmac)/USB OTG are not emulated
+      # by QEMU's raspi machine models, so this cannot and does not attempt
+      # to confirm AP bring-up or WAN behavior — appliance/tests/e2e/'s
+      # generic-hardware proof already covers that real behavior far more
+      # thoroughly than a raspi3b peripheral emulation could. This closes a
+      # different, narrower gap: has anyone confirmed the actual released
+      # artifact's kernel/init/systemd/daemon chain works at all.
+      - name: Boot-smoke-test the actual released image (real qemu-system-aarch64)
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends qemu-system-arm
+
+          IMG="${{ steps.names.outputs.image }}"
+          WORK="$(mktemp -d)"
+
+          LOOP="$(sudo losetup --find --show -P "${IMG}")"
+          sudo mkdir -p "${WORK}/boot"
+          sudo mount -o ro "${LOOP}p1" "${WORK}/boot"
+
+          KERNEL="${WORK}/boot/kernel8.img"
+          if [ ! -f "${KERNEL}" ]; then
+            echo "FATAL: no kernel8.img on the boot partition"
+            ls -la "${WORK}/boot"
+            exit 1
+          fi
+
+          # The Zero 2W's SoC (RP3A0) is the same BCM2837 family QEMU's
+          # raspi3b machine models — try the Zero 2W's own devicetree first,
+          # fall back to the Pi 3B's (electrically/architecturally close
+          # enough for CPU/kernel boot, which is all this step needs; it
+          # never touches real WiFi/USB peripherals either way).
+          DTB=""
+          for candidate in bcm2837-rpi-zero-2-w.dtb bcm2710-rpi-zero-2-w.dtb bcm2710-rpi-3-b-plus.dtb bcm2710-rpi-3-b.dtb; do
+            if [ -f "${WORK}/boot/${candidate}" ]; then
+              DTB="${WORK}/boot/${candidate}"
+              break
+            fi
+          done
+          if [ -z "${DTB}" ]; then
+            echo "FATAL: no usable devicetree found on the boot partition"
+            ls -la "${WORK}/boot"/*.dtb
+            exit 1
+          fi
+          echo "Using kernel=${KERNEL} dtb=${DTB}"
+          cp "${KERNEL}" "${WORK}/kernel8.img"
+          cp "${DTB}" "${WORK}/board.dtb"
+          sudo umount "${WORK}/boot"
+          sudo losetup -d "${LOOP}"
+
+          CONSOLE="${WORK}/console.log"
+          touch "${CONSOLE}"
+          set +e
+          timeout 240 qemu-system-aarch64 \
+            -M raspi3b -m 1024 -smp 4 \
+            -kernel "${WORK}/kernel8.img" -dtb "${WORK}/board.dtb" \
+            -append "console=ttyAMA0 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait rw" \
+            -drive file="${IMG}",format=raw,if=sd \
+            -serial file:"${CONSOLE}" -display none -no-reboot
+          QEMU_RC=$?
+          set -e
+
+          echo "--- boot console (last 300 lines) ---"
+          tail -300 "${CONSOLE}" || true
+          echo "--- (qemu exit code: ${QEMU_RC}) ---"
+
+          if ! grep -q "Started WI-FUCKED connectivity controller" "${CONSOLE}"; then
+            echo "FATAL: wifucked.service never reached its started state on the actual released image"
+            exit 1
+          fi
+          echo "boot-smoke-test: OK — wifucked.service started on the real released image under qemu-system-aarch64"
+
       - name: Compress and checksum
         run: |
           set -euo pipefail
