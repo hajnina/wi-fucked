@@ -91,11 +91,18 @@ if ! lsmod | grep -q '^mac80211_hwsim'; then
         "$(cat "${RESULTS}/logs/modprobe-hwsim.log"; echo ---; uname -r; echo ---; lsmod | head -30)"
     finish 1
 fi
-mapfile -t WLAN_IFACES < <(iw dev 2> /dev/null | awk '/Interface/ {print $2}' | sort)
+# `iw` isn't installed yet at this point (that's the real setup_rpi.sh's job,
+# a few phases from now) — enumerate wireless netdevs straight from /sys
+# instead of shelling out to a userspace tool that may not exist yet.
+mapfile -t WLAN_IFACES < <(
+    for d in /sys/class/net/*; do
+        [ -e "${d}/phy80211" ] && basename "${d}"
+    done | sort
+)
 if [ "${#WLAN_IFACES[@]}" -ne 2 ]; then
     fragment "01_hwsim_module" fail "${t0}" \
         "expected exactly 2 wireless interfaces from mac80211_hwsim radios=2, found ${#WLAN_IFACES[@]}" \
-        "iw dev: ${WLAN_IFACES[*]:-none}"
+        "/sys/class/net wireless devices: ${WLAN_IFACES[*]:-none}; all: $(ls /sys/class/net)"
     finish 1
 fi
 fragment "01_hwsim_module" pass "${t0}" "mac80211_hwsim loaded, interfaces: ${WLAN_IFACES[*]}"
@@ -115,13 +122,13 @@ if [ "${AP_RAW}" != "wlan0" ]; then
     ip link set "${AP_RAW}" name wlan0
 fi
 ip link set wlan0 up
-# Belt-and-suspenders against a real race this harness introduces that a real
-# device does not have: on real hardware, setup_rpi.sh's NetworkManager
-# unmanaged-devices config is baked into the image before first boot, so NM
-# never sees wlan0 unmanaged. Here, setup_rpi.sh runs live during this boot,
-# so there is a real window where NM could grab wlan0 first. Documented in
-# README.md's "known deviations from a real device."
-nmcli device set wlan0 managed no 2> /dev/null || true
+# NetworkManager isn't even installed yet at this point (setup_rpi.sh, next
+# phase, installs it) — nothing to guard against here yet. The real mitigation
+# for the race this harness introduces (setup_rpi.sh's unmanaged-devices
+# config runs live during boot instead of being baked into the image before
+# first boot, as it is on a real device) is the `systemctl restart
+# NetworkManager` right before hostapd starts, below — see README.md's
+# "known deviations from a real device."
 
 # Move the second radio out of the root netns *before* NetworkManager or
 # hostapd can see it at all — it plays the "phone" in this proof.

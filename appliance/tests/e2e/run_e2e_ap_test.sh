@@ -101,10 +101,28 @@ qemu-system-x86_64 \
     > "${WORKDIR}/qemu.log" 2>&1 &
 QEMU_PID=$!
 
+# A guest-initiated ACPI poweroff does not reliably make the qemu *process*
+# itself exit in every environment this has been observed to run in (the
+# guest cleanly reaches its own poweroff in well under a minute, but the host
+# process can outlive that indefinitely) — so process exit alone is not a
+# safe completion signal. The guest's own finish() fsyncs and writes DONE to
+# the results disk before ever calling `systemctl poweroff`; poll for that
+# file directly (mtools reads the raw image file, unaffected by whatever
+# advisory lock qemu itself holds on it) and only fall back to the full
+# timeout if it never appears at all.
 WAITED=0
+DONE_AT=""
 while kill -0 "${QEMU_PID}" 2> /dev/null; do
     if [ "${WAITED}" -ge "${QEMU_TIMEOUT_S}" ]; then
         log "TIMEOUT after ${QEMU_TIMEOUT_S}s; killing qemu (pid ${QEMU_PID})"
+        break
+    fi
+    if [ -z "${DONE_AT}" ] && mdir -i "${WORKDIR}/results.img" ::DONE > /dev/null 2>&1; then
+        DONE_AT="${WAITED}"
+        log "guest signalled DONE at ~${WAITED}s; giving qemu up to 15s more to exit on its own"
+    fi
+    if [ -n "${DONE_AT}" ] && [ "$((WAITED - DONE_AT))" -ge 15 ]; then
+        log "qemu process did not exit within 15s of guest DONE; killing pid ${QEMU_PID}"
         break
     fi
     sleep 5
@@ -117,7 +135,7 @@ else
     TIMED_OUT=0
 fi
 wait "${QEMU_PID}" 2> /dev/null || true
-log "qemu exited after ~${WAITED}s (timed_out=${TIMED_OUT})"
+log "qemu exited after ~${WAITED}s (guest DONE at ~${DONE_AT:-never}s)"
 
 cp -f "${WORKDIR}/console.log" "${RESULTS_DIR}/console.log" 2> /dev/null || true
 
