@@ -1,0 +1,68 @@
+#cloud-config
+# NoCloud seed for the AP + dashboard E2E proof (appliance/tests/e2e/README.md).
+#
+# Deliberately minimal: everything real — package installs, systemd units,
+# hostapd/dnsmasq/networkd config — comes from actually running the repo's
+# own appliance/setup_rpi.sh and appliance/stage-custom/opt/wifucked/firstboot.sh
+# inside the guest (see guest/e2e_driver.sh), not from anything written here.
+# This file's only job is: get the repo and a results disk mounted, then hand
+# off to that script.
+package_update: false
+package_upgrade: false
+
+write_files:
+  - path: /usr/local/bin/wifucked-e2e-bootstrap.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # Mounts the repo (read-only ISO9660) and the results disk (blank FAT,
+      # formatted by the host before boot) at fixed, predictable device
+      # names, then hands off to the real driver script living in the repo
+      # checkout — kept out of cloud-init's own write_files precisely so it
+      # stays a normal, shellcheck-linted, version-controlled file.
+      set -u
+      mkdir -p /mnt/repo /mnt/results
+      for dev in /dev/sr0 /dev/sr1 /dev/sr2; do
+          [ -b "${dev}" ] || continue
+          if mount -o ro "${dev}" /mnt/repo 2> /dev/null && \
+              [ -f /mnt/repo/appliance/tests/e2e/guest/e2e_driver.sh ]; then
+              break
+          fi
+          umount /mnt/repo 2> /dev/null || true
+      done
+      if ! mountpoint -q /mnt/repo; then
+          echo "wifucked-e2e-bootstrap: FATAL could not find the repo ISO on any /dev/srN" >&2
+          exit 1
+      fi
+      for dev in /dev/vdb /dev/vdc; do
+          [ -b "${dev}" ] || continue
+          if mount "${dev}" /mnt/results 2> /dev/null; then
+              break
+          fi
+      done
+      if ! mountpoint -q /mnt/results; then
+          echo "wifucked-e2e-bootstrap: FATAL could not mount the results disk" >&2
+          exit 1
+      fi
+      exec /bin/bash /mnt/repo/appliance/tests/e2e/guest/e2e_driver.sh
+
+  - path: /etc/systemd/system/wifucked-e2e-bootstrap.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=WI-FUCKED AP+dashboard E2E proof
+      After=network.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/wifucked-e2e-bootstrap.sh
+      TimeoutStartSec=0
+      StandardOutput=journal+console
+      StandardError=journal+console
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - [ systemctl, daemon-reload ]
+  - [ systemctl, enable, --now, wifucked-e2e-bootstrap.service ]
