@@ -396,6 +396,67 @@ both bugs together — should go from FAIL to PASS with both fixes in place,
 on real WAN atomics with zero pre-seeded demand *and* zero pre-seeded
 capacity.
 
+**Status update:** with both fixes above in place, stage 18 still failed —
+but the actual cause turned out to be a third, unrelated bug (item 17,
+below), not the tunnel/NAT path at all. Root-caused via a genuine real
+packet capture on the appliance's own `wlan0`/`wg0` (`appliance/tests/e2e/`
+now installs `tcpdump` and captures both, after an earlier attempt was
+itself broken — see item 17's write-up): the client's SYN genuinely reaches
+`wlan0` (six real retransmits, correct addressing) but never reaches `wg0`
+at all, because the WAN atomics it would have routed through get pulled out
+of the NORMAL pool entirely before the packet gets there.
+
+### 17. fix(hal/linux): a working WAN atomic gets misclassified as a bare LAN-out port
+
+**Status:** merged
+**Found by:** debugging item 16 (above) — after both of item 16's own fixes
+landed, `appliance/tests/e2e/`'s fabric/tunnel proof (PR #48) still failed
+stage 18. A real packet capture proved the client's SYN reaches `wlan0` but
+never reaches `wg0`; `state_snapshots.json` showed why: every WAN atomic's
+`role` starts `"wan"` (the first two snapshots) and then flips to
+`"lan_out"` for every snapshot after that, for all three atomics, for the
+rest of the run. `Atomic.usable` requires `role is PortRole.WAN`, so once
+misclassified an atomic drops out of the NORMAL pool entirely — headroom
+goes back to zero and the route gets torn down, regardless of anything
+item 16 fixed.
+
+**The bug:** `lanout/__init__.py`'s `_is_candidate()` (ADR-023's DHCP-attempt
+→ passive-listen → DHCP-server pipeline) only checks `present`/`role`/
+`kind`/`health` — never whether the atomic already has a real, working
+upstream connection. Every wired/USB-Ethernet interface is managed by
+NetworkManager by default (`setup_rpi.sh`'s `unmanaged-devices` only covers
+`wlan0*`/`wg0`), so a genuinely working WAN atomic already has an address
+from NetworkManager by the time this classifier runs `hal.dhcp
+.attempt_client_lease()` on it. That method (`hal/linux.py`'s `LinuxDhcp`)
+unconditionally ran its own `dhclient -1` on the interface — competing with
+whatever already holds the interface's DHCP client role for the same
+BOOTP/DHCP socket, which can spuriously fail or time out. A failed attempt
+falls through to passive-listen (which also may hear nothing, since the
+real DHCP server already answered the earlier, real request) and then to
+`became_dhcp_server` — misclassifying a live, working WAN port as bare and
+starting a rogue DHCP server on a real upstream segment.
+
+**Fix:** `LinuxDhcp.attempt_client_lease()` now checks for an existing
+usable address first (`_read_lease()`, already used post-`dhclient` to read
+the result back) and returns it immediately without ever invoking
+`dhclient` — an existing lease already satisfies the method's own contract
+("a lease means an upstream network exists here"), so there is no reason to
+negotiate a new one and risk the conflict. Scoped to `hal/linux.py` only;
+`lanout/__init__.py`'s sequencing is unchanged.
+
+**Test coverage:** `appliance/tests/test_hal_linux.py`
+`TestAttemptClientLeaseSkipsWhenAlreadyAddressed` — an existing address
+short-circuits without running `dhclient` at all (asserts on it directly),
+and the no-address path still runs `dhclient` exactly as before. This is
+real-OS-process-conflict behavior `MOCK_HW=1`/scenario tests structurally
+cannot reproduce (same caveat `LinuxDhcp`'s own docstring already carries)
+— `appliance/tests/e2e/`'s fabric/tunnel proof is the only thing that can
+confirm this against real `dhclient`/NetworkManager interaction.
+
+**Verification:** `appliance/tests/e2e/`'s fabric/tunnel proof (PR #48,
+stage `18_tunnel_download_survives_chaos`) — should go from FAIL to PASS
+with this fix plus both of item 16's fixes in place.
+
 ## Verification (every item)
 
 ```
