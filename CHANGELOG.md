@@ -1,3 +1,12 @@
+## v1.4.0 — 2026-08-07
+
+### feat
+- real hostapd/dnsmasq/Playwright E2E proof for AP + dashboard bring-up (#45)
+
+### docs
+- changelog for v1.3.5 [skip ci]
+
+
 ## v1.3.5 — 2026-08-07
 
 ### docs
