@@ -274,6 +274,12 @@ jobs:
             KVER=$(find /lib/modules -mindepth 1 -maxdepth 1 -printf "%f\n" | head -n1)
             modinfo -k "${KVER}" sch_cake  > /dev/null || { echo "FATAL: sch_cake missing";  exit 1; }
             modinfo -k "${KVER}" wireguard > /dev/null || { echo "FATAL: wireguard missing"; exit 1; }
+            # ADR-025: download shaping redirects ingress through an IFB
+            # device onto a second CAKE qdisc — without this module, that
+            # redirect silently has nowhere to go and download simply never
+            # gets shaped, exactly the kind of failure this gate exists to
+            # catch at build time instead of on a device in the field.
+            modinfo -k "${KVER}" ifb        > /dev/null || { echo "FATAL: ifb missing";      exit 1; }
             command -v nft     > /dev/null || { echo "FATAL: nft missing";     exit 1; }
             command -v tc      > /dev/null || { echo "FATAL: tc missing";      exit 1; }
             command -v hostapd > /dev/null || { echo "FATAL: hostapd missing"; exit 1; }

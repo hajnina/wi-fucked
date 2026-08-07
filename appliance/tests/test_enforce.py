@@ -220,6 +220,78 @@ def test_apply_cake_argv():
     ]
 
 
+def test_apply_ingress_shaping_argv():
+    """ADR-025: download is shaped via an IFB redirect since CAKE can only
+    shape the direction traffic leaves an interface. `ifb-f2fb6f66` is
+    `_ifb_for_ifname("wlan0")`.
+    """
+    calls: list[list[str]] = []
+
+    def fake(argv, **kwargs):
+        calls.append(argv)
+        return _completed()
+
+    with patch("wifucked.enforce.subprocess.run", side_effect=fake):
+        LinuxEnforcer()._apply_ingress_shaping(
+            Shaping("wlan0", down_bps=40_000_000, up_bps=9_500_000, diffserv="diffserv4")
+        )
+
+    assert ["ip", "link", "add", "ifb-f2fb6f66", "type", "ifb"] in calls
+    assert ["ip", "link", "set", "dev", "ifb-f2fb6f66", "up"] in calls
+    assert ["tc", "qdisc", "add", "dev", "wlan0", "handle", "ffff:", "ingress"] in calls
+    assert [
+        "tc",
+        "filter",
+        "replace",
+        "dev",
+        "wlan0",
+        "parent",
+        "ffff:",
+        "protocol",
+        "all",
+        "prio",
+        "10",
+        "u32",
+        "match",
+        "u32",
+        "0",
+        "0",
+        "action",
+        "mirred",
+        "egress",
+        "redirect",
+        "dev",
+        "ifb-f2fb6f66",
+    ] in calls
+    # down_bps, not up_bps — the whole point of the IFB redirect.
+    assert [
+        "tc",
+        "qdisc",
+        "replace",
+        "dev",
+        "ifb-f2fb6f66",
+        "root",
+        "cake",
+        "bandwidth",
+        "40000000bit",
+        "diffserv4",
+    ] in calls
+
+
+def test_apply_ingress_shaping_tolerates_already_present_ifb_and_ingress_qdisc():
+    def fake(argv, **kwargs):
+        if argv[:3] == ["ip", "link", "add"] or argv[:3] == ["tc", "qdisc", "add"]:
+            return _completed(returncode=2, stderr="RTNETLINK answers: File exists")
+        return _completed()
+
+    # Must not raise — re-running against an already-set-up IFB is the
+    # idempotent happy path (ADR-007: every tick reconciles from scratch).
+    with patch("wifucked.enforce.subprocess.run", side_effect=fake):
+        LinuxEnforcer()._apply_ingress_shaping(
+            Shaping("wlan0", down_bps=40_000_000, up_bps=9_500_000, diffserv="diffserv4")
+        )
+
+
 def test_apply_route_installs_rule_with_deterministic_priority_and_default_route():
     calls: list[list[str]] = []
 
@@ -251,7 +323,9 @@ _TC_JSON = """
 [
   {"kind":"noqueue","handle":"0:","dev":"lo","root":true,"refcnt":2},
   {"kind":"cake","handle":"800d:","dev":"wlan0","root":true,"refcnt":2,
-   "options":{"bandwidth":"95Mbit","diffserv":"diffserv4","flowmode":"triple-isolate"}}
+   "options":{"bandwidth":"95Mbit","diffserv":"diffserv4","flowmode":"triple-isolate"}},
+  {"kind":"cake","handle":"800e:","dev":"ifb-f2fb6f66","root":true,"refcnt":2,
+   "options":{"bandwidth":"500Kbit","diffserv":"diffserv4","flowmode":"triple-isolate"}}
 ]
 """
 
@@ -301,11 +375,12 @@ def test_actual_parses_real_kernel_json():
         state = LinuxEnforcer().actual()
 
     assert state is not None
-    # CAKE reports the single egress rate it actually shapes, which
-    # `_apply_cake` programs from `up_bps` — `down_bps` isn't observable
-    # from `tc` (no IFB device shapes ingress; see `_apply_cake`).
+    # `up_bps` is the real interface's own egress CAKE (`_apply_cake`);
+    # `down_bps` is read back from its paired IFB device's egress CAKE
+    # (`_apply_ingress_shaping`, ADR-025) — `ifb-f2fb6f66` is
+    # `_ifb_for_ifname("wlan0")`.
     assert (
-        Shaping(ifname="wlan0", down_bps=0, up_bps=95_000_000, diffserv="diffserv4")
+        Shaping(ifname="wlan0", down_bps=500_000, up_bps=95_000_000, diffserv="diffserv4")
         in state.shaping
     )
     assert (10, 10) in state.marks
@@ -336,9 +411,10 @@ def _reconcile_dispatch(applied: list[list[str]]):
 
 
 def test_reconcile_is_a_noop_when_kernel_already_matches():
-    # Matches what _read_dispatch reports, except down_bps (not observable
-    # from CAKE — see `_apply_cake`) and a sub-1% up_bps rounding — both
-    # must be tolerated.
+    # Matches what _read_dispatch reports (both the real interface's egress
+    # CAKE and its paired IFB's egress CAKE, down_bps=500_000 via
+    # ifb-f2fb6f66), except a sub-1% up_bps rounding, which must be
+    # tolerated.
     desired = DesiredState(
         shaping=(Shaping("wlan0", down_bps=500_000, up_bps=95_400_000, diffserv="diffserv4"),),
         routes=(RouteRule(10, 100, "usb0"), RouteRule(20, 100, "usb0")),

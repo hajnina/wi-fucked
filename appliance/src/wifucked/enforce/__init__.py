@@ -54,6 +54,22 @@ _TABLE_BASE = 100
 _TABLE_SPAN = 900
 
 
+def _ifb_for_ifname(ifname: str) -> str:
+    """Deterministic IFB (Intermediate Functional Block) device name for one
+    interface's ingress-shaping redirect target (ADR-025).
+
+    Derived from `ifname`, not atomic id: unlike routing tables (which must
+    stay stable across a reboot for `_table_for_atomic`'s reasons), an IFB
+    device is a purely runtime construct that gets recreated fresh every
+    time this module runs against a real ifname within one boot — it is
+    never persisted or compared across a restart, so ADR-002's "never key
+    identity by ifname" does not apply to it. Truncated to stay inside
+    Linux's IFNAMSIZ (15 usable chars).
+    """
+    digest = hashlib.sha256(ifname.encode()).hexdigest()
+    return f"ifb-{digest[:8]}"
+
+
 def _table_for_atomic(atomic_id: str) -> int:
     """Deterministic, collision-resistant routing table number for one atomic.
 
@@ -304,6 +320,7 @@ class LinuxEnforcer(Enforcer):
 
         for shaping in desired.shaping:
             self._apply_cake(shaping)
+            self._apply_ingress_shaping(shaping)
         self._apply_marks(desired.lan_out_marks)
         for route in desired.routes:
             self._apply_route(route)
@@ -384,16 +401,15 @@ class LinuxEnforcer(Enforcer):
             # so an exact bit-for-bit comparison would rarely converge. Compare
             # within a tolerance and re-shape only on a meaningful change.
             #
-            # `_apply_cake` programs `up_bps` (egress is bounded by upload
-            # capacity, see `_apply_cake`'s docstring), and `_read_shaping`
-            # reads that same applied rate back into `up_bps` — so the
-            # convergence check must compare `up_bps`, not `down_bps`.
-            # `down_bps` isn't actually enforced by anything in this codebase
-            # today (no IFB device — see `_apply_cake`), so it can't be read
-            # back or compared.
+            # `up_bps` is the real interface's own egress CAKE (`_apply_cake`);
+            # `down_bps` is its paired IFB device's egress CAKE, which is what
+            # actually shapes this atomic's ingress (`_apply_ingress_shaping`,
+            # ADR-025) — both are real, installed, and read back.
             if have is None or have.diffserv != want.diffserv:
                 return False
             if not _close(have.up_bps, want.up_bps):
+                return False
+            if not _close(have.down_bps, want.down_bps):
                 return False
 
         current_routes = {(r.fwmark, r.table, r.ifname) for r in current.routes}
@@ -408,14 +424,7 @@ class LinuxEnforcer(Enforcer):
     def _apply_cake(self, shaping: Shaping) -> None:
         # `tc qdisc ... dev <ifname> root` shapes *egress* off this box, which is
         # bounded by our upload capacity, not our download capacity — using
-        # `down_bps` here shaped the wrong direction entirely. True ingress
-        # (download) shaping isn't implemented anywhere in this codebase: CAKE
-        # can only shape the direction traffic leaves an interface, so shaping
-        # download would need an IFB (Intermediate Functional Block) device to
-        # redirect ingress through an egress qdisc, and nothing here creates
-        # one. Flagged as a known gap (see PR body) rather than added here —
-        # this fix corrects the direction that was actively wrong; adding a
-        # whole new virtual-device lifecycle is a separate change.
+        # `down_bps` here shaped the wrong direction entirely.
         argv = [
             "tc",
             "qdisc",
@@ -447,6 +456,111 @@ class LinuxEnforcer(Enforcer):
             intent="shape egress to measured upload capacity",
             ifname=shaping.ifname,
             target_bps=shaping.up_bps,
+        )
+
+    def _apply_ingress_shaping(self, shaping: Shaping) -> None:
+        """Shape ingress (download) via an IFB redirect (ADR-025).
+
+        CAKE can only shape the direction traffic *leaves* an interface, so
+        shaping download needs an IFB (Intermediate Functional Block) device:
+        redirect this atomic's ingress onto the IFB's egress, then let CAKE
+        shape that. Without this, an asymmetric link's upload direction was
+        the only one ever actively managed — on a real consumer connection,
+        an unmanaged download queue building up at the ISP (or on this box's
+        own ingress) is exactly the kind of bufferbloat that also starves
+        upload's ACK clocking and vice versa; shaping only one direction
+        leaves half of CAKE's whole reason for existing unaddressed.
+        """
+        ifb = _ifb_for_ifname(shaping.ifname)
+        if self._dry_run:
+            log.info(
+                "Would apply ingress CAKE",
+                extra={
+                    "workflow": "enforce_shaping",
+                    "state": "skipped",
+                    "intent": "shape ingress to measured download capacity",
+                    "ifname": shaping.ifname,
+                    "ifb": ifb,
+                    "target_bps": shaping.down_bps,
+                    "reason": "dry run",
+                },
+            )
+            return
+        self._exec(
+            ["ip", "link", "add", ifb, "type", "ifb"],
+            workflow="enforce_shaping",
+            intent="create the IFB device this atomic's ingress redirects onto",
+            tolerate_exists=True,
+            ifname=shaping.ifname,
+            ifb=ifb,
+        )
+        self._exec(
+            ["ip", "link", "set", "dev", ifb, "up"],
+            workflow="enforce_shaping",
+            intent="bring the IFB device up so it can carry redirected ingress",
+            ifb=ifb,
+        )
+        self._exec(
+            ["tc", "qdisc", "add", "dev", shaping.ifname, "handle", "ffff:", "ingress"],
+            workflow="enforce_shaping",
+            intent="attach an ingress qdisc so ingress traffic can be redirected",
+            tolerate_exists=True,
+            ifname=shaping.ifname,
+        )
+        # `replace`, not `add` — idempotent by construction, unlike the
+        # ingress qdisc/IFB-creation steps above which need `tolerate_exists`
+        # instead. `u32 match u32 0 0` is the classic "match everything" idiom
+        # (matches the whole first 32 bits against a zero mask — always
+        # true), chosen over the newer `matchall` action for broader `tc`
+        # version compatibility.
+        self._exec(
+            [
+                "tc",
+                "filter",
+                "replace",
+                "dev",
+                shaping.ifname,
+                "parent",
+                "ffff:",
+                "protocol",
+                "all",
+                "prio",
+                "10",
+                "u32",
+                "match",
+                "u32",
+                "0",
+                "0",
+                "action",
+                "mirred",
+                "egress",
+                "redirect",
+                "dev",
+                ifb,
+            ],
+            workflow="enforce_shaping",
+            intent="redirect this atomic's ingress onto its IFB device",
+            ifname=shaping.ifname,
+            ifb=ifb,
+        )
+        self._exec(
+            [
+                "tc",
+                "qdisc",
+                "replace",
+                "dev",
+                ifb,
+                "root",
+                "cake",
+                "bandwidth",
+                f"{shaping.down_bps}bit",
+                shaping.diffserv,
+            ],
+            workflow="enforce_shaping",
+            intent="shape ingress to measured download capacity",
+            ifname=shaping.ifname,
+            ifb=ifb,
+            target_bps=shaping.down_bps,
         )
 
     # -- marking --------------------------------------------------------------
@@ -606,23 +720,29 @@ class LinuxEnforcer(Enforcer):
         except json.JSONDecodeError as exc:
             _log_parse_failure("tc", exc)
             return None
-        result: list[Shaping] = []
+        # Every CAKE qdisc this module ever installs lives on either a real
+        # atomic interface (egress/up_bps, `_apply_cake`) or that interface's
+        # paired IFB device (ingress/down_bps, `_apply_ingress_shaping`) —
+        # collect both by device name first, then reassemble each real
+        # ifname's pair via `_ifb_for_ifname` rather than trying to read the
+        # ingress redirect filter back (the rate is what matters for
+        # convergence, not re-deriving the filter that produced it).
+        cake_by_dev: dict[str, tuple[int, str]] = {}
         for qdisc in entries:
             if qdisc.get("kind") != "cake":
                 continue
             dev = qdisc.get("dev")
             options = qdisc.get("options") or {}
-            up_bps = _parse_rate(options.get("bandwidth"))
-            if not dev or up_bps is None:
+            rate = _parse_rate(options.get("bandwidth"))
+            if not dev or rate is None:
                 continue
-            result.append(
-                Shaping(
-                    ifname=dev,
-                    down_bps=0,  # not enforced anywhere yet — no IFB device, see _apply_cake.
-                    up_bps=up_bps,  # the single egress rate CAKE actually shapes.
-                    diffserv=str(options.get("diffserv", "diffserv4")),
-                )
-            )
+            cake_by_dev[dev] = (rate, str(options.get("diffserv", "diffserv4")))
+        result: list[Shaping] = []
+        for dev, (up_bps, diffserv) in cake_by_dev.items():
+            if dev.startswith("ifb-"):
+                continue  # paired below via its real interface, not its own entry
+            down_bps, _ = cake_by_dev.get(_ifb_for_ifname(dev), (0, diffserv))
+            result.append(Shaping(ifname=dev, down_bps=down_bps, up_bps=up_bps, diffserv=diffserv))
         return result
 
     def _read_marks(self) -> list[tuple[int, int]] | None:
