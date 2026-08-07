@@ -294,7 +294,7 @@ second, separate bug sits behind it.
 ### 16. investigate: primary WAN stable and healthy, but zero bytes ever
 ### reach the far side of the tunnel
 
-**Status:** open, not yet root-caused
+**Status:** merged — PR #48's stage 18 passes on real CI; see "final update" below
 **Found by:** re-run of `appliance/tests/e2e/`'s fabric/tunnel proof (PR
 #48, run `31187384249`) after merging item 15's fix. Stages 1–17 all PASS,
 including `17_wan_failover_observed`. Stage `18_tunnel_download_survives_chaos`
@@ -465,56 +465,80 @@ This fix genuinely closed the misclassification. Stage 18 *still* failed
 one more time after this — see item 16's final update below for why, which
 turned out to be a fourth and last thing, unrelated to any of items 15/16/17.
 
-### Item 16, final update: the real root cause was a kernel route-cache limitation, not a wifucked bug
+### Item 16, final update: PASSING — the real root cause was forwarding never actually being enabled on the appliance
+
+**Stage 18 now passes**, checksum-correct, on real CI (PR #48, all 18
+stages green). The full chain of what it took to get there, in the order
+each layer was found:
 
 With items 15, 16, and 17's fixes all in place, `state_snapshots.json`
-showed a stable `role: "wan"` and a `route_rules` count that, once it first
-went to 1, never dropped back to 0 for the rest of the run — genuinely
-converged, no more mid-flight teardown. A real packet capture on the
-appliance's own `wlan0`/`wg0` still showed the client's SYN reaching
-`wlan0` (real retransmits, correctly addressed) but never reaching `wg0` —
-even with a stable, correct `ip rule`/`ip route table` the whole time.
+showed a stable `role: "wan"` and a `route_rules` count that, once first
+set, never dropped back to 0 — genuinely converged, no more mid-flight
+teardown. A real packet capture on the appliance's own `wlan0`/`wg0` still
+showed the client's SYN reaching `wlan0` (real retransmits, correctly
+addressed) but never reaching `wg0`, even with a stable, correct `ip
+rule`/`ip route table` the whole time.
 
-This turned out not to be a code bug anywhere in this repo. It's a
-well-documented Linux kernel limitation: an unconnected socket's SYN
-retransmissions reuse the route cached at that socket's *first* connect()
-attempt, and nothing invalidates that cache when an `ip rule` changes
-afterward (confirmed against real kernel bug/patch history — e.g. the IPv6
-`fib6_rules` cache-flush fix for the identical class of problem, IPv4 has
-the same underlying gap). `appliance/tests/e2e/guest/e2e_driver.sh`'s
-download stage started one `curl --max-time 150` — one socket, one
-connect() attempt, held open the whole run — immediately, by design, to
-test cold-start convergence. If that first connect() fires before the
-daemon's very first reconcile installs the fwmark rule (a real possibility
-this same test deliberately creates by starting immediately), every
-retransmission for the rest of the 150s reuses that one stale, pre-route
-decision — regardless of how quickly or correctly `wifucked` converges
-afterward. A real client doesn't hold one broken handshake open for 150s;
-it gives up and opens a fresh connection, which gets a fresh routing
-lookup. Fixed in the test harness: `curl --retry 999 --retry-delay 3
---retry-all-errors --retry-connrefused --connect-timeout 10` — each retry
-is a genuinely new socket and a fresh routing lookup (unlike the kernel's
-own SYN retransmission of one held-open attempt), matching how a real
-client actually behaves.
+The next hypothesis — that `curl --max-time 150`'s single held-open
+connect() attempt was reusing a route cached before the fwmark rule
+existed, a real and separately-confirmed Linux kernel limitation (IPv6's
+`fib6_rules` cache-flush fix is the identical class of bug) — was **wrong
+as the explanation for this failure**, though the fix it produced
+(`curl --retry`, fresh sockets per attempt, matching how a real client
+actually behaves rather than holding one handshake open for 150s) was a
+correct, worthwhile hardening of the test regardless. It was disproven
+directly: with `--retry` in place, every single retry — including ones
+firing long after `route_rules` was confirmed stable — got a genuinely
+fresh socket (distinct source ports in the packet capture) and **still**
+failed identically. A route-cache problem would not survive a fresh
+connect().
 
-**The complete picture, four independent things, each caught by the same
-test at a different depth:**
+That result pointed back at something more fundamental than routing: not
+"is the packet routed correctly" but "is this box forwarding packets
+between interfaces at all." Checking `/proc/sys/net/ipv4/conf/*/forwarding`
+directly on the failure confirmed it: **`conf/all/forwarding=0`** — despite
+`setup_rpi.sh`'s own `/etc/sysctl.d/90-wifucked.conf` containing
+`net.ipv4.ip_forward=1`, verbatim, correctly written to disk. Whatever
+applies `/etc/sysctl.d/*.conf` at boot did not reliably do so in this real,
+non-mocked run. This is not a routing bug, a NAT bug, or a WireGuard bug —
+the kernel was never forwarding anything between interfaces on the
+appliance at all, for the entire investigation. Every other piece of state
+(marks, routes, NAT, the handshake) being correct was real and necessary,
+but none of it could matter while this one flag was off.
+
+The fix does not depend on the boot-time file working: `tunnel
+._configure_interface()` now enables forwarding itself — both
+`net.ipv4.ip_forward=1` and the per-interface `net.ipv4.conf.wg0
+.forwarding=1` (the latter matters independently: `conf.default.forwarding`
+only seeds interfaces created *after* it's set, and `wg0` is created
+immediately before this point, so setting only the global/default value
+would not have been sufficient even if the boot-time file had applied) —
+every time the tunnel is configured, matching `FabricWireGuard
+._enable_forwarding_and_nat()`'s identical, already-proven pattern on the
+fabric side of this same tunnel (ADR-007: reconciliation, not assumption
+about what an external boot process already did).
+
+**The complete picture — five independent things, each caught by the same
+test at a different depth, in order:**
 1. Item 15 — demand-side deadlock (`ceiling_bps` gated on `down_bps` alone).
 2. Item 16 — capacity-side deadlock (`_usable_capacity()` gated on
    confidence that could only ever come from traffic the deadlock itself
    prevented).
 3. Item 17 — a working WAN atomic misclassified as LAN-out by a competing
    `dhclient` attempt.
-4. A kernel route-caching limitation the test harness's own single
-   long-held connection attempt was exposed to, unrelated to any of the
-   above.
+4. A test-harness hardening (real client retry behavior) that, while not
+   the cause of this particular failure, is a correct fix in its own right
+   and remains in place.
+5. **The actual root cause** — `net.ipv4.ip_forward`/per-interface
+   forwarding never reliably enabled on the appliance at runtime, despite
+   correct boot-time configuration on disk. Fixed by having the tunnel
+   code ensure it directly instead of trusting the boot-time file.
 
 Every one of these was invisible to every earlier proof of this path
-because every earlier proof hand-seeded something — demand, capacity, or
-just never ran a real unconnected-socket-then-route-appears sequence at
-all. `appliance/tests/e2e/`'s fabric/tunnel proof (PR #48) is the first
-thing that ever exercised the real, cold, unseeded sequence end to end, and
-it found all four.
+because every earlier proof hand-seeded something, or simply never ran a
+real, cold, fully-unseeded sequence long enough and honestly enough to hit
+all five. `appliance/tests/e2e/`'s fabric/tunnel proof (PR #48) is the
+first thing that ever did, and it found every one of them.
 
 ## Verification (every item)
 
