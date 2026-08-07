@@ -193,7 +193,14 @@ mkdir -p "${PAYLOAD_DIR}"
 dd if=/dev/urandom of="${PAYLOAD_DIR}/payload.bin" bs=1M count="${INTERNET_PAYLOAD_MB}" status=none
 PAYLOAD_SHA256="$(sha256sum "${PAYLOAD_DIR}/payload.bin" | awk '{print $1}')"
 log "Internet stand-in payload: ${INTERNET_PAYLOAD_MB}MB, sha256=${PAYLOAD_SHA256}"
-ip netns exec wifucked-e2e-internet python3 -m http.server "${INTERNET_HTTP_PORT}" \
+# PYTHONUNBUFFERED=1: python's stdout is block-buffered once it isn't a
+# tty (true here, redirected to a file), so http.server's own request log
+# lines — including whether it never received anything at all — would
+# otherwise sit in an unflushed buffer and be lost when cleanup() kills
+# this process. An empty internet-httpd.log from a buffered process proves
+# nothing about whether a request arrived; this makes an empty file after
+# a real run actually mean "zero requests," not "buffering ate the log."
+PYTHONUNBUFFERED=1 ip netns exec wifucked-e2e-internet python3 -m http.server "${INTERNET_HTTP_PORT}" \
     --directory "${PAYLOAD_DIR}" --bind "${INTERNET_NS_ADDR}" \
     > "${WORKDIR}/internet-httpd.log" 2>&1 &
 INTERNET_HTTPD_PID=$!
@@ -372,6 +379,23 @@ cp -f "${WORKDIR}/internet-httpd.log" "${RESULTS_DIR}/internet-httpd.log" 2> /de
     wg show wg0 2>&1
     echo "== host-side fabric peers.json =="
     cat /var/lib/fabric/peers.json 2>&1
+    # Item 16 (docs/backlog/traffic-blockers.md): the WireGuard layer has
+    # tested healthy every time this has failed (real handshake, matching
+    # send/receive byte counts on both ends) while curl never got a
+    # SYN-ACK back. That points at the FORWARD hook on this host — the
+    # kernel treats a decrypted wg0 packet destined off-host as a forward
+    # (wg0 -> veth-inet), a separate netfilter hook from wg0's own
+    # crypto-routing and from the fabric's own NAT rule. Capture the
+    # actual chain state and connection tracking instead of continuing to
+    # infer this from wg's byte counters alone.
+    echo "== host iptables FORWARD chain =="
+    iptables -L FORWARD -n -v --line-numbers 2>&1
+    echo "== host nft ruleset (iptables-nft and the fabric's own NAT table share this host netns) =="
+    nft list ruleset 2>&1
+    echo "== host conntrack (if available) =="
+    conntrack -L 2>&1
+    echo "== host route lookup for the Internet stand-in =="
+    ip route get "${INTERNET_NS_ADDR}" 2>&1
 } > "${RESULTS_DIR}/fabric-host-diagnostics.log" 2>&1 || true
 
 # --- extract results ---------------------------------------------------------
