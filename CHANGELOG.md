@@ -1,3 +1,12 @@
+## v1.6.1 — 2026-08-07
+
+### fix
+- a working WAN atomic gets misclassified as LAN-out (#56)
+
+### docs
+- changelog for v1.6.0 [skip ci]
+
+
 ## v1.6.0 — 2026-08-07
 
 ### feat
