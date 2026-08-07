@@ -310,7 +310,29 @@ class Allocator:
             headroom = max(0, normal_capacity)
             for profile in sorted(self._profiles, key=lambda p: p.priority):
                 want = demand.get(profile.name)
-                want_bps = want.down_bps if want else 0
+                # A brand-new client's *first* packet (a SYN, a DNS query) is
+                # measured on `up_bps` (LAN rx — traffic arriving from the
+                # client), never `down_bps` (LAN tx — replies going back out).
+                # `enforce.render()` only installs a route for a share whose
+                # `ceiling_bps > 0`, so gating this solely on `down_bps` was a
+                # deadlock: no route exists to carry a reply, so `down_bps`
+                # can never become non-zero, so no route is ever built — a
+                # real client's first connection attempt could never open at
+                # all (docs/backlog/traffic-blockers.md item 15). Taking the
+                # larger of both directions lets first-packet demand open the
+                # route; once traffic is flowing both directions grow anyway,
+                # so this doesn't change steady-state behaviour.
+                #
+                # NORMAL-pool only, deliberately: the BACKUP block below keeps
+                # gating on `down_bps` alone. BACKUP is metered (ADR-006) and
+                # its share is already gated by `may_use_backup` — letting
+                # unmeasured "someone might send a first packet" demand also
+                # force capacity onto BACKUP would spend real money before any
+                # *actual* need was ever measured, which is exactly what
+                # ADR-006's liveness-budget accounting exists to prevent.
+                # NORMAL capacity costs nothing, so opening a route on
+                # first-packet demand here carries no equivalent risk.
+                want_bps = max(want.down_bps, want.up_bps) if want else 0
                 # Critical is served first; best-effort gets what survives. This
                 # is what "protect the important traffic" means in practice — not
                 # that critical takes everything.

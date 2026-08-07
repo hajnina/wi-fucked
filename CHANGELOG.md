@@ -1,3 +1,22 @@
+## v1.5.1 — 2026-08-07
+
+### docs
+- a first-time client can never get routed at all (#50)
+- changelog for v1.5.0 [skip ci]
+
+
+## v1.5.0 — 2026-08-07
+
+### feat
+- real multi-WAN discovery, chaos, and failover in the E2E proof (#46)
+
+### fix
+- don't start wifucked.service before wlan0 has its gateway address (#49)
+
+### docs
+- changelog for v1.4.0 [skip ci]
+
+
 ## v1.4.0 — 2026-08-07
 
 ### feat

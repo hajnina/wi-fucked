@@ -237,6 +237,55 @@ decision, not just a driver swap). Can't be fully verified under
 `MOCK_HW=1`; add a `docs/active-tests.md` entry (`UNCONFIRMED` until someone
 runs it on hardware) rather than claiming it works from mocks alone.
 
+### 15. fix(allocator): a first-time client can never get routed at all
+
+**Status:** merged
+**Found by:** `appliance/tests/e2e/`'s fabric/tunnel proof (PR #48) — the
+first real, non-mocked, non-hand-seeded exercise of this exact path. Every
+earlier proof of ADR-019 egress (including
+`appliance/tests/qemu/run_wan_chaos_download_test.sh`) hand-seeded a fixed,
+non-zero `ClassDemand` from the start (`chaos_driver.py`: `demand = {...
+down_bps=8_000_000 ...}`), which is exactly what sidesteps this bug — none
+of them ever exercised demand actually reaching zero-to-nonzero from a cold
+boot.
+
+**The bug:** `allocator/__init__.py` `_build()` (~312) computes a share's
+`ceiling_bps` from `demand[profile].down_bps` alone. `demand/__init__.py`'s
+`CounterDemand` docstring is explicit about direction: `down_bps` is the
+LAN interface's *transmit* delta — traffic going *out* to clients, i.e.
+replies — and `up_bps` is *receive* — traffic *in* from clients, i.e.
+requests. A brand-new client's first packet (a SYN, a DNS query) is
+`up_bps`, not `down_bps`: it arrives at the AP and increments a real RX
+counter regardless of whether any route exists yet to forward it anywhere.
+But `render()` (`enforce/__init__.py` ~150) only ever installs a policy
+route for a share whose `ceiling_bps > 0`, and `ceiling_bps` only comes from
+`down_bps` — which can only become non-zero *after* a reply has already
+made it back through a route that, by construction, does not exist yet.
+Confirmed directly in a real CI run: `wifucked.enforce`'s own structured
+log showed `route_rules=0` on every single reconcile tick for the full
+150s of a real client's real connection attempt (`ip rule show` /
+`ip route show table 888` on the guest independently confirmed no policy
+route was ever installed), and the real `curl` download through the real
+tunnel timed out unable to even open a TCP connection
+(`Failed to connect to ... Couldn't connect to server`) — not a throughput
+problem, a routing-never-existed problem.
+
+**Likely fix shape** (needs its own design pass, not a blind one-line
+patch — this changes allocator contract, needs a scenario test per
+SOP-003): the share-ceiling computation needs to account for `up_bps`
+(client demand to be let *out*) as well as `down_bps`, or a NORMAL atomic
+with unclaimed headroom needs some small non-demand-gated floor per profile
+so a first packet always has somewhere to go, with demand-measured ceilings
+taking over once real traffic is flowing. Either approach needs to preserve
+ADR-006/ADR-022's money-safety guarantees for `BACKUP` — the fix must not
+accidentally let a first-time client force capacity onto a metered
+connection with no measured demand to justify it.
+
+**Verification:** `appliance/tests/e2e/`'s fabric/tunnel proof (PR #48,
+stage `18_tunnel_download_survives_chaos`) is the regression test — it
+should go from FAIL to PASS once this is fixed, on real WAN atomics with
+zero pre-seeded demand.
+
 ## Verification (every item)
 
 ```
