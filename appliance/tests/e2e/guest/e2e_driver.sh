@@ -561,7 +561,30 @@ tcpdump -Z root -i wg0 -nn -w "${RESULTS}/logs/wg0.pcap" \
     > "${RESULTS}/logs/tcpdump-wg0.log" 2>&1 &
 TCPDUMP_WG0_PID=$!
 
-ip netns exec "${CLIENT_NS}" curl -sS --max-time "${CHAOS_DURATION_S}" \
+# Item 16 (docs/backlog/traffic-blockers.md): a real packet capture proved
+# the client's SYN genuinely reaches wlan0, correctly marked and routed
+# (ip rule/route table both confirmed present and stable), yet never
+# reached wg0 — even though a fresh `ip route get` for the same 4-tuple
+# resolved correctly. This is a well-documented Linux kernel limitation,
+# not a wifucked bug: an unconnected socket's SYN retransmissions reuse the
+# route cached at the *first* connect() attempt, and nothing invalidates
+# that cache when an `ip rule` changes after the fact (confirmed against
+# real kernel bug history — e.g. the IPv6 fib6_rules cache-flush fix for
+# the identical problem). `curl --max-time N` alone holds one socket, and
+# one connect() attempt open for the whole run — if that first attempt
+# fires before the daemon's very first reconcile installs the fwmark rule
+# (a real possibility, since this download starts immediately to test
+# cold-start convergence), every retransmission for the rest of the run
+# reuses that one stale, pre-route decision, regardless of how quickly or
+# correctly wifucked actually converges afterward. A real client (browser,
+# app) doesn't hold one broken handshake open for 150s — it gives up and
+# opens a fresh connection, which gets a fresh routing lookup. `--retry`
+# does exactly that (a new socket, new connect() per attempt), unlike the
+# kernel's own SYN retransmission of one held-open attempt;
+# `--connect-timeout` bounds each attempt so a bad one gives up fast
+# instead of camping on the full ~130s kernel SYN-retry schedule.
+ip netns exec "${CLIENT_NS}" curl -sS --connect-timeout 10 --max-time "${CHAOS_DURATION_S}" \
+    --retry 999 --retry-delay 3 --retry-all-errors --retry-connrefused \
     -o "${DOWNLOAD_FILE}" "${INTERNET_URL}" > "${DOWNLOAD_LOG}" 2>&1 &
 DOWNLOAD_PID=$!
 
