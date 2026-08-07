@@ -142,14 +142,19 @@ ip link set wlan0 up
 apt-get install -y -qq iw > /dev/null
 CLIENT_PHY="$(cat "/sys/class/net/${CLIENT_RAW}/phy80211/name")"
 ip netns add "${CLIENT_NS}"
-iw phy "${CLIENT_PHY}" set netns name "${CLIENT_NS}"
 
-# `iw phy ... set netns` returns before the move is necessarily visible to a
-# subsequent `ip netns exec` in the same script (observed: an immediate
-# `ip link set` right after it can race the kernel/udev side of the move) —
-# poll briefly rather than assume it landed synchronously.
+# Observed flaky across otherwise-identical CI runs: `iw phy ... set netns
+# name ...` sometimes leaves the phy exactly where it started, with no
+# visible error, no dmesg line, nothing -- and sometimes it works first try.
+# Re-issue the move (not just wait longer) each time it hasn't taken effect,
+# capturing every attempt's own output, rather than assume one call is
+# reliable.
 MOVED=0
-for _ in $(seq 1 10); do
+MOVE_LOG=""
+for attempt in $(seq 1 10); do
+    MOVE_OUT="$(iw phy "${CLIENT_PHY}" set netns name "${CLIENT_NS}" 2>&1)"
+    MOVE_LOG="${MOVE_LOG}
+attempt ${attempt}: rc=$? out=[${MOVE_OUT}]"
     if ip netns exec "${CLIENT_NS}" test -e "/sys/class/net/${CLIENT_RAW}/phy80211"; then
         MOVED=1
         break
@@ -158,8 +163,10 @@ for _ in $(seq 1 10); do
 done
 if [ "${MOVED}" != "1" ]; then
     fragment "02_iface_split" fail "${t0}" \
-        "${CLIENT_RAW}/${CLIENT_PHY} did not appear in netns ${CLIENT_NS} within 10s of the move" \
-        "root ns: $(ip link show 2>&1); ${CLIENT_NS} ns: $(ip netns exec "${CLIENT_NS}" ip link show 2>&1)"
+        "${CLIENT_RAW}/${CLIENT_PHY} did not appear in netns ${CLIENT_NS} after 10 attempts of 'iw phy ... set netns'" \
+        "${MOVE_LOG}
+root ns: $(ip link show 2>&1)
+${CLIENT_NS} ns: $(ip netns exec "${CLIENT_NS}" ip link show 2>&1)"
     finish 1
 fi
 ip netns exec "${CLIENT_NS}" ip link set lo up
