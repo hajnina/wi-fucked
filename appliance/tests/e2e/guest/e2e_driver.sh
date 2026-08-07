@@ -138,8 +138,16 @@ ip link set wlan0 up
 # `iw phy PHY set netns` is the only way to move it, which needs `iw`
 # installed a little earlier than setup_rpi.sh would otherwise install it —
 # test-harness-only: a real device has exactly one radio and never needs to
-# relocate a second one.
-apt-get install -y -qq iw > /dev/null
+# relocate a second one. `apt-get update` hasn't run yet this boot (the base
+# image ships no populated package index), so every "iw: command not found"
+# on the first CI runs of this stage was this install silently no-op'ing
+# against an empty index — it must run first, and its own failure must stop
+# the script instead of being swallowed by `> /dev/null` with no exit check.
+apt-get update -qq
+if ! apt-get install -y -qq iw; then
+    fragment "02_iface_split" fail "${t0}" "apt-get install iw failed" ""
+    finish 1
+fi
 CLIENT_PHY="$(cat "/sys/class/net/${CLIENT_RAW}/phy80211/name")"
 ip netns add "${CLIENT_NS}"
 
