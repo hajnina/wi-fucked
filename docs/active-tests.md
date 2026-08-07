@@ -714,6 +714,73 @@ the case that must never fail quietly.
   scenario-tested (`appliance/tests/test_lanout.py`,
   `appliance/tests/scenarios/test_lan_out_enforcement.py`), not yet run
   against real hardware or a real hostile network by anyone.
+- 2026-08-08 — a real e2e run (`appliance/tests/e2e/`, PR #48) caught a real
+  bug in this exact pipeline: `attempt_client_lease()` ran its own
+  `dhclient -1` unconditionally, even on an atomic that already had a
+  working address from NetworkManager, and the resulting socket conflict
+  spuriously misclassified a live WAN port as LAN-out. Fixed (#56) by
+  checking for an existing address first. Confirms this pipeline's real
+  fallibility is not hypothetical — it broke a genuinely working port on
+  the very first real, non-hand-seeded exercise of this exact code path.
+
+---
+
+### Download shaping via IFB redirect (ADR-025)
+
+**Status:** `UNCONFIRMED`
+**Touches:** `appliance/src/wifucked/enforce/__init__.py`
+(`_ifb_for_ifname`, `_apply_ingress_shaping`, `_read_shaping`,
+`_converged`), `.github/workflows/reusable_image_pipeline.yml` (capability
+gate: `ifb` kernel module)
+**Related:** [ADR-025](adr/ADR-025-ingress-shaping-via-ifb.md)
+
+**What actually runs today:** every reconcile tick that shapes a NORMAL
+atomic now also creates (or confirms) an IFB device for it, redirects that
+atomic's ingress onto the IFB via a `tc filter ... mirred egress redirect`,
+and shapes the IFB's own egress with CAKE from `down_bps` — not gated
+behind any flag; it runs on every real allocation the daemon renders,
+exactly like the pre-existing egress-only shaping it extends.
+
+**What is unconfirmed:**
+- Whether the `ifb` kernel module actually loads on the shipped Raspberry
+  Pi OS kernel — the bake pipeline's capability gate now checks
+  `modinfo -k <kver> ifb` at build time, but nobody has watched
+  `ip link add ... type ifb` actually succeed and carry real traffic on a
+  real Pi.
+- Whether the `u32 match u32 0 0` ingress-redirect filter behaves
+  identically across whatever `tc`/iproute2 version this image ships versus
+  whatever was used to write it — this is the same class of "written to be
+  correct for a Debian-family userspace, not confirmed against real
+  hardware" caveat `LinuxDhcp`'s own docstring already carries for a
+  different pipeline.
+- Whether shaping both directions in practice actually reduces bufferbloat
+  measurably on a real, asymmetric consumer connection under real load, as
+  opposed to just being correctly *installed* — this entry can confirm the
+  kernel state exists; it cannot confirm the product claim ("download and
+  upload no longer starve each other") without a real device and a real
+  saturating load test.
+
+**Built-in fallback if it fails:** none beyond `_exec`'s existing
+never-raises contract — a failed `ip link add`/`tc filter` call logs and
+reconciliation retries next tick (ADR-007). Worst case: download stays
+unshaped, exactly the pre-ADR-025 status quo — not a regression in blast
+radius, since egress shaping (already confirmed working) is applied by a
+separate, independent code path unaffected by this one failing.
+
+**Next step:** on a real device with two saturating flows (one download,
+one upload) running concurrently, confirm `tc -s qdisc show` reports both
+the real interface's own CAKE qdisc and its paired `ifb-*` device's CAKE
+qdisc actively shaping traffic (non-zero packets/bytes, sensible backlog),
+and that neither direction's throughput collapses when the other saturates
+— the actual behavior this ADR exists to produce, not just the kernel
+objects that are supposed to produce it.
+
+**History:**
+- 2026-08-08 — implemented to close a known gap flagged since the PR that
+  first got `_apply_cake`'s shaping direction correct (see ADR-025 for the
+  bufferbloat-interaction reasoning); `MOCK_HW`-only, `test_enforce.py`
+  covers argv construction and read-back parsing against representative
+  `tc -j qdisc show` JSON, not real kernel behavior.
 
 ---
 
