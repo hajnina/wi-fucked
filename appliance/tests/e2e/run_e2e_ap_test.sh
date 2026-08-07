@@ -274,6 +274,15 @@ REPORT_RC=$?
 python3 "${HERE}/build_report.py" --results-dir "${RESULTS_DIR}" || \
     log "WARNING build_report.py failed; report.md/junit.xml above are still valid"
 
+# This whole script runs under sudo (QEMU networking, taps, iptables) and
+# some of what lands in RESULTS_DIR is written by daemonized root processes
+# (dnsmasq's own --log-facility file, in particular) with restrictive
+# permissions — unreadable by the actions runner's normal, non-root user, so
+# `actions/upload-artifact` fails outright trying to zip it. This isn't
+# sensitive output (see ci.yml's job — none of it is), so make it all
+# world-readable rather than track down each writer's own umask individually.
+chmod -R a+rX "${RESULTS_DIR}" 2> /dev/null || true
+
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
         cat "${RESULTS_DIR}/report.md"
