@@ -1,3 +1,16 @@
+## v1.6.0 — 2026-08-07
+
+### feat
+- DHCP-server fallback for bare wired LAN-out ports (ADR-023) (#53)
+
+### fix
+- a never-measured NORMAL atomic can never get a route (#55)
+
+### docs
+- record item 16 — tunnel download still fails post item-15 fix (#54)
+- changelog for v1.5.3 [skip ci]
+
+
 ## v1.5.3 — 2026-08-07
 
 ### docs
