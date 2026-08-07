@@ -239,7 +239,7 @@ runs it on hardware) rather than claiming it works from mocks alone.
 
 ### 15. fix(allocator): a first-time client can never get routed at all
 
-**Status:** not started
+**Status:** merged
 **Found by:** `appliance/tests/e2e/`'s fabric/tunnel proof (PR #48) — the
 first real, non-mocked, non-hand-seeded exercise of this exact path. Every
 earlier proof of ADR-019 egress (including
