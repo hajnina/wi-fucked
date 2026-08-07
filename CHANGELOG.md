@@ -1,3 +1,10 @@
+## v1.5.1 — 2026-08-07
+
+### docs
+- a first-time client can never get routed at all (#50)
+- changelog for v1.5.0 [skip ci]
+
+
 ## v1.5.0 — 2026-08-07
 
 ### feat
