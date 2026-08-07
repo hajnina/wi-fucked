@@ -57,6 +57,24 @@ class LanConfig:
 
 
 @dataclass(slots=True)
+class LanOutConfig:
+    """The DHCP-attempt / passive-listen / DHCP-server-fallback pipeline
+    (ADR-023, implementing ADR-022's Decision) for wired/USB-Ethernet ports.
+
+    ``enabled`` defaults to True — "plug it in and it works" is the product
+    (ADR-022's Context). The two timeouts are judgement calls, not measured
+    against real hardware or a real hostile network; see
+    ``wifucked.lanout``'s module docstring and the PR that introduced this
+    config block for the reasoning, and ``docs/active-tests.md`` for what's
+    actually been confirmed.
+    """
+
+    enabled: bool = True
+    dhcp_client_timeout_s: float = 8.0
+    passive_listen_timeout_s: float = 15.0
+
+
+@dataclass(slots=True)
 class FabricConfig:
     servers: list[str] = field(default_factory=list)
     interface: str = "wg0"
@@ -99,6 +117,7 @@ class LoopConfig:
 @dataclass(slots=True)
 class Config:
     lan: LanConfig = field(default_factory=LanConfig)
+    lan_out: LanOutConfig = field(default_factory=LanOutConfig)
     fabric: FabricConfig = field(default_factory=FabricConfig)
     loops: LoopConfig = field(default_factory=LoopConfig)
     thresholds: Thresholds = field(default_factory=Thresholds)
@@ -176,6 +195,7 @@ def load(path: Path | None = None) -> Config:
         return config
 
     _merge(config.lan, payload.get("lan", {}))
+    _merge(config.lan_out, payload.get("lan_out", {}))
     _merge(config.fabric, payload.get("fabric", {}))
     _merge(config.loops, payload.get("loops", {}))
     if "thresholds" in payload:

@@ -13,7 +13,7 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
-from wifucked.atomics.model import Atomic, Capacity, Cost, Health, Mode
+from wifucked.atomics.model import Atomic, Capacity, Cost, Health, Mode, PortRole
 from wifucked.clock import Clock
 from wifucked.logging import get_logger
 
@@ -59,6 +59,15 @@ class Registry:
 
     def backups(self) -> list[Atomic]:
         return [a for a in self.all() if a.mode is Mode.BACKUP and a.present]
+
+    def lan_out_atomics(self) -> list[Atomic]:
+        """Wired ports currently serving DHCP outward (ADR-023), present or not.
+
+        Present-but-role-LAN_OUT is the normal case; a LAN-out port can also
+        be absent (unplugged) while still remembering its role, same as any
+        other atomic.
+        """
+        return [a for a in self.all() if a.role is PortRole.LAN_OUT]
 
     # -- mutation -------------------------------------------------------------
 
@@ -192,6 +201,62 @@ class Registry:
         self.persist()
         return updated
 
+    def set_role_and_mode(
+        self, atomic_id: str, role: PortRole, mode: Mode, *, reason: str
+    ) -> Atomic | None:
+        """Apply the DHCP-attempt/passive-listen pipeline's outcome (ADR-023).
+
+        Sets ``role`` and ``mode`` together, under one lock acquisition, so a
+        reader never observes the moment-in-between where a port claims to be
+        ``LAN_OUT`` but is still ``Mode.NORMAL`` (which would put it in the
+        WAN pool, `Atomic.usable`'s belt-and-suspenders guard notwithstanding
+        — better to never produce the inconsistent state at all). This is a
+        pipeline decision, not a user's classification choice, so it logs and
+        persists distinctly from `set_mode` (a human clicking a dashboard
+        control) even though the mechanics are the same.
+        """
+        with self._lock:
+            atomic = self._atomics.get(atomic_id)
+            if atomic is None:
+                found = False
+            else:
+                role_from, mode_from = atomic.role, atomic.mode
+                self._atomics[atomic_id] = replace(atomic, role=role, mode=mode)
+                updated = self._atomics[atomic_id]
+                found = True
+
+        if not found:
+            log.warning(
+                "Port role classification requested for unknown connection",
+                extra={
+                    "workflow": "port_role_classification",
+                    "state": "failed",
+                    "intent": "apply the DHCP-attempt/passive-listen pipeline's outcome",
+                    "atomic_id": atomic_id,
+                    "reason": "no such atomic in registry",
+                },
+            )
+            return None
+
+        log.info(
+            "Port role classified",
+            extra={
+                "workflow": "port_role_classification",
+                "state": "completed",
+                "intent": "decide whether a wired port is a WAN source or should serve "
+                "DHCP outward, without ever putting two DHCP servers on one segment",
+                "atomic_id": atomic_id,
+                "label": atomic.label,
+                "role_from": str(role_from),
+                "role_to": str(role),
+                "mode_from": str(mode_from),
+                "mode_to": str(mode),
+                "reason": reason,
+            },
+        )
+        self.persist()
+        return updated
+
     def update_capacity(self, atomic_id: str, capacity: Capacity) -> None:
         with self._lock:
             atomic = self._atomics.get(atomic_id)
@@ -308,6 +373,7 @@ class Registry:
                     "kind": str(atomic.kind),
                     "label": atomic.label,
                     "mode": str(atomic.mode),
+                    "role": str(atomic.role),
                     "ever_connected": atomic.ever_connected,
                     "capacity": {
                         "down_bps": atomic.capacity.down_bps,
@@ -407,6 +473,7 @@ class Registry:
                     kind=Kind(entry["kind"]),
                     label=entry.get("label", atomic_id),
                     mode=Mode(entry.get("mode", "unused")),
+                    role=PortRole(entry.get("role", "wan")),
                     health=Health.ABSENT,
                     ever_connected=entry.get("ever_connected", False),
                     capacity=self._reconstruct_capacity(
