@@ -376,11 +376,19 @@ jobs:
           CONSOLE="${WORK}/console.log"
           touch "${CONSOLE}"
           set +e
-          timeout 240 qemu-system-aarch64 \
-            -M raspi3b -m 1024 -smp 4 \
+          # Matches the confirmed-working community invocation for this
+          # machine model closely, not just what seemed plausible: the
+          # console needs an explicit baud rate (`,115200`) to actually
+          # attach, and `-cpu cortex-a53` (the Zero 2W's real CPU, same
+          # family raspi3b emulates) rather than leaving qemu to pick a
+          # default. A first attempt without these produced a clean exit
+          # (code 0) with zero console output at all — not a kernel panic,
+          # the console genuinely never attached.
+          timeout 300 qemu-system-aarch64 \
+            -M raspi3b -cpu cortex-a53 -m 1024 -smp 4 \
             -kernel "${WORK}/kernel8.img" -dtb "${WORK}/board.dtb" \
-            -append "console=ttyAMA0 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait rw" \
-            -drive file="${BOOT_IMG}",format=raw,if=sd \
+            -append "console=ttyAMA0,115200 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait rw" \
+            -sd "${BOOT_IMG}" \
             -serial file:"${CONSOLE}" -display none -no-reboot
           QEMU_RC=$?
           set -e
