@@ -1,3 +1,12 @@
+## v1.8.0 — 2026-08-08
+
+### feat
+- persistent journald and per-boot AP/DHCP snapshot for field diagnosis (#60)
+
+### docs
+- changelog for v1.7.1 [skip ci]
+
+
 ## v1.7.1 — 2026-08-08
 
 ### docs
