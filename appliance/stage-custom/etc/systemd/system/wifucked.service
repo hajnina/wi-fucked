@@ -7,10 +7,18 @@
 # Note also the absence of ExecStop cleanup. Kernel state outlives this process
 # deliberately, so a control-plane failure degrades adaptivity rather than
 # causing an outage (ADR-008). Do not add teardown here.
+#
+# After=systemd-networkd.service (added 2026-08-08): config.api_host is
+# hardcoded to the LAN gateway address, which systemd-networkd assigns to the
+# AP interface (lan/__init__.py's networkd_config(), independent of this
+# daemon per ADR-011). This unit starting first raised an unhandled OSError
+# out of app.run() and crash-looped -- __main__.py now retries that bind
+# instead of crashing, so this ordering is defense-in-depth (fewer retries
+# needed in the common case), not the only fix.
 
 [Unit]
 Description=WI-FUCKED connectivity controller
-After=network.target wifucked-firstboot.service
+After=network.target wifucked-firstboot.service systemd-networkd.service
 Wants=network.target
 
 [Service]

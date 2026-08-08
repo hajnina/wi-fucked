@@ -887,6 +887,128 @@ pipeline — a check nobody ever expects to pass is worse than no check.
 
 ---
 
+### Diagnosis-phase persistent logging: journald Storage=persistent, per-boot state snapshot
+
+**Status:** `UNCONFIRMED`
+**Touches:** `appliance/setup_rpi.sh` (journald `Storage=`/`SystemMaxUse=`),
+`appliance/stage-custom/opt/wifucked/diag_snapshot.sh` (new),
+`appliance/stage-custom/etc/systemd/system/wifucked-diag-snapshot.service`,
+`wifucked-diag-snapshot.timer` (new)
+**Related:** [ADR-010](adr/ADR-010-state-storage.md), [SOP-009](sop/SOP-009-hardware-and-field-debugging.md),
+the "AP bring-up" entry above, #15
+
+**What actually runs today:** In direct response to a real device reporting
+"associates, never gets an address, even with a manually-set static IP" and
+the field debugging session finding that `hostapd`/`dnsmasq`/`NetworkManager`/
+`systemd-networkd` only ever logged to journald — which is `Storage=volatile`
+by design (ADR-010, to protect the SD card) and is wiped on every power
+cycle — this changes journald to `Storage=persistent`, bounded to
+`SystemMaxUse=64M`, and adds `wifucked-diag-snapshot.timer`, firing
+`wifucked-diag-snapshot.service` once ~15s after boot and then every minute
+for the life of the boot (not a single boot-time sample — state relevant to a
+live test can change at any point, and the point of failure is not
+necessarily near boot). Each firing appends `rfkill list`, `nmcli device
+status`, `ip addr`/`ip route`, unit status for all four services,
+`hostapd_cli status`/`list_sta`, and that boot's `hostapd`/`dnsmasq` journal
+to the already-persistent `/var/log/wifucked-boot.log`, which self-truncates
+to its last 8MB once it exceeds 16MB so per-minute snapshots do not grow the
+file without bound.
+
+**What is unconfirmed:** Whether `SystemMaxUse=64M` is actually honored by the
+journald build on this image (bounded persistent journald has not been
+observed running on this hardware); whether running every minute for hours is
+an SD-wear cost worth accepting even bounded (each firing is a handful of
+small appends, not a rewrite, but this has not been measured against
+real flash); and whether 64M of journald plus the boot log's own 16MB cap is
+enough headroom given `wifucked-console.service`'s own already-documented
+SD-wear cost (the "USB OTG..." entry above) stacking with this.
+
+**Built-in fallback if it fails:** None new — if the snapshot unit fails to
+run or journald persistence silently doesn't take, the situation is exactly
+what it was before this change (volatile-only logs), not worse.
+
+**Next step:** Boot a device, reproduce the "no IP" symptom, power-cycle, and
+confirm `journalctl -u hostapd -u dnsmasq -b` and
+`/var/log/wifucked-boot.log`'s snapshot both still show the failure after the
+reboot rather than being empty.
+
+**Explicitly temporary:** revert `Storage=persistent` back to `volatile` and
+remove `wifucked-diag-snapshot.service` once the "AP bring-up" entry above is
+`CONFIRMED` — this trades away ADR-010's SD-wear protection on purpose, only
+for the duration of this investigation.
+
+**History:**
+- 2026-08-08 — added in direct response to a real device report that a
+  manually-configured static IP still could not reach the gateway, and that
+  the relevant service logs (hostapd/dnsmasq/NetworkManager/networkd) were
+  already lost to a reboot before they could be read. Not yet run on real
+  hardware.
+
+---
+
+### Dashboard bind crash-loop on the LAN gateway address
+
+**Status:** `UNCONFIRMED`
+**Touches:** `appliance/src/wifucked/__main__.py` (`_serve_with_retry`, removal
+of a duplicate `daemon.start()` call), `appliance/stage-custom/etc/systemd/system/wifucked.service`
+(`After=systemd-networkd.service`)
+**Related:** [ADR-007](adr/ADR-007-reconciliation.md), [ADR-008](adr/ADR-008-fail-to-last-known-good.md),
+[ADR-011](adr/ADR-011-ap-is-the-anchor.md), the "AP bring-up" entry above, #15
+
+**What actually runs today:** Real device logs uploaded during the "no IP
+handed out" investigation showed the daemon's own application log consisting
+*entirely* of `config_load` → `hal_init` → `daemon_start` (logged twice) →
+`api_start`, repeating every ~7 seconds with zero `WARNING`/`ERROR` lines and
+zero evidence it ever reached WAN discovery or radio/enforcement code — a
+silent, continuous crash loop matching `wifucked.service`'s
+`Restart=always`/`RestartSec=5`. Root cause read from source: `config.api_host`
+is hardcoded to the LAN gateway address (`10.44.0.1`), assigned to the AP
+interface by `systemd-networkd` independently of this daemon (ADR-011) with no
+ordering guarantee against it; `wifucked.service` only had
+`After=network.target`, which does not wait for that address. Starting first
+means Flask's `app.run()` raises an unhandled `OSError: [Errno 99] Cannot
+assign requested address`, which — because the control-loop thread is
+`daemon=True` — takes the *entire* process down, including WAN
+discovery/allocation/enforcement, not just the dashboard. The daemon never got
+far enough to log anything about hostapd, dnsmasq, or the radio, which is why
+the earlier "AP bring-up" entry's hypotheses (rfkill, NetworkManager, the
+dnsmasq `bind-interfaces` race) couldn't be confirmed from this device's logs
+either — this bug was masking all of them. Fixed by retrying the bind with
+backoff (`_serve_with_retry`, bounded to 120s) instead of crashing, plus
+`After=systemd-networkd.service` as defense-in-depth to reduce how often the
+retry path is even needed. Also removed a duplicate `daemon.start()` call
+(`__main__.py` called it directly *and* `run_forever()` calls it again as its
+first action) found via the log's double `daemon_start` lines — harmless
+(fabric-attach is already idempotent) but wasteful and confusing to read logs
+against.
+
+**What is unconfirmed:** Whether this actually was the entire explanation for
+the reported device's failure, or one of several compounding problems (the
+uploaded logs contained no hostapd/dnsmasq/NetworkManager/systemd-networkd
+output at all — see the new persistent-logging entry above, added for exactly
+this gap). Whether `EADDRNOTAVAIL` is in fact the errno raised on this
+image/Python/Flask combination for this failure mode (reasoned from the
+`OSError: [Errno 99]` text reported previously, not observed directly in the
+uploaded logs, which predate this fix). Whether 120s is long enough for a
+first-boot device where `systemd-networkd` itself is slow to start.
+
+**Built-in fallback if it fails:** If the retry logic itself has a bug, the
+outer `Restart=always`/`RestartSec=5` still recovers the process eventually,
+same as before this change — just with the same silent-crash-loop symptom.
+
+**Next step:** Reproduce on a device where the gateway address is slow to
+appear (or force it, e.g. by delaying `systemd-networkd`), and confirm the
+dashboard now comes up once the address lands instead of crash-looping, with
+`workflow=api_start state=processing` retry lines visible in
+`/var/log/wifucked.log` in the meantime.
+
+**History:**
+- 2026-08-08 — found and fixed from real device logs during the "Wi-Fi never
+  hands out an address" investigation (#15-adjacent). Not yet confirmed
+  against real hardware.
+
+---
+
 ## Template for new entries
 
 ```markdown

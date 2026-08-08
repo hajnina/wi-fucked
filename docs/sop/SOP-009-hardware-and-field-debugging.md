@@ -52,11 +52,32 @@ The same fields, structured, also come back from
 when the dashboard is reachable but you want one file to attach rather than a
 log query.
 
-`journalctl` is RAM-only on this image (`Storage=volatile` in `setup_rpi.sh`, to
-protect the SD card) — it is lost the moment the device is power-cycled, which is
-often exactly when you'd want it, and it says nothing about a boot early enough
-that the daemon or a console isn't up yet. `wifucked-firstboot` and
-`wifucked-bootcount` write their own output to a persistent file for that reason:
+**DIAGNOSIS-PHASE (2026-08-08):** `journalctl` is normally RAM-only on this
+image (`Storage=volatile` in `setup_rpi.sh`, to protect the SD card) — lost the
+moment the device is power-cycled, which is often exactly when you'd want it.
+While the "Wi-Fi never hands out an address" investigation is open, `setup_rpi.sh`
+sets `Storage=persistent` instead, bounded to `SystemMaxUse=64M`, specifically so
+`hostapd`/`dnsmasq`/`NetworkManager`/`systemd-networkd` — none of which log
+anywhere else — survive a reboot:
+
+```bash
+journalctl -u hostapd -u dnsmasq -u systemd-networkd -u NetworkManager -b --no-pager
+```
+
+Revert to `Storage=volatile` once `docs/active-tests.md`'s "AP bring-up" entry is
+`CONFIRMED`; this is a deliberate, temporary trade against ADR-010's SD-wear
+rationale, not a permanent change of that decision.
+
+Regardless of journald's retention, it still says nothing about a boot early
+enough that the daemon or a console isn't up yet. `wifucked-firstboot` and
+`wifucked-bootcount` write their own output to a persistent file for that reason,
+and — also diagnosis-phase, also temporary — `wifucked-diag-snapshot.timer`
+appends a full snapshot (`rfkill`, `nmcli`, `ip addr`, `ip route`, unit status,
+`hostapd_cli status`/`list_sta`, and the current boot's `hostapd`/`dnsmasq`
+journal) to the same file once ~15s after boot and then **every minute** for
+the life of the boot — continuous, not a single boot-time sample, because
+whatever fails may not fail near boot. The file self-truncates to its last
+8MB once it passes 16MB so this does not grow without bound:
 
 ```bash
 cat /var/log/wifucked-boot.log

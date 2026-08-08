@@ -1,0 +1,13 @@
+# DIAGNOSIS-PHASE unit (2026-08-08). See diag_snapshot.sh and SOP-009.
+#
+# Triggered every minute by wifucked-diag-snapshot.timer, not enabled
+# directly (same pattern as wifucked-watchdog.service/.timer) — a continuous
+# record of AP/DHCP/daemon state, since the state that matters can change at
+# any point during a live test, not only at boot.
+
+[Unit]
+Description=WI-FUCKED diagnosis-phase state snapshot (temporary)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/wifucked/diag_snapshot.sh
