@@ -49,6 +49,7 @@ systemctl enable wifucked-firstboot.service
 systemctl enable wifucked-bootcount.service
 systemctl enable wifucked.service
 systemctl enable wifucked-watchdog.timer
+systemctl enable wifucked-diag-snapshot.service
 
 # TEMPORARY, DESTRUCTIVE, bring-up only — see wifucked-console.service and
 # hdmi_console.sh. This exists because the first real-hardware boots have
@@ -149,7 +150,18 @@ cat > /etc/tmpfiles.d/wifucked.conf <<'EOF'
 d /run/wifucked 0755 root root -
 EOF
 
-sed -i 's/#Storage=auto/Storage=volatile/' /etc/systemd/journald.conf || true
+# DIAGNOSIS-PHASE OVERRIDE (2026-08-08): journald is Storage=persistent,
+# bounded, rather than the volatile/RAM-only default this project otherwise
+# runs to protect the SD card. The field bug this is in service of (Wi-Fi
+# associates but never hands out an address) needs hostapd/dnsmasq/
+# NetworkManager/systemd-networkd unit logs to survive a reboot, and volatile
+# journald throws exactly those away the moment the device is power-cycled —
+# which is often the first thing someone does after a failed test. Bounded to
+# 64M on disk so this does not become an unbounded write-wear source; revisit
+# once the AP bring-up entry in docs/active-tests.md is CONFIRMED and this
+# stops being the active diagnostic path. See docs/sop/SOP-009.
+sed -i 's/#Storage=auto/Storage=persistent/' /etc/systemd/journald.conf || true
+sed -i 's/#SystemMaxUse=/SystemMaxUse=64M/' /etc/systemd/journald.conf || true
 sed -i 's/#RuntimeMaxUse=/RuntimeMaxUse=32M/' /etc/systemd/journald.conf || true
 
 # --- capability check -------------------------------------------------------

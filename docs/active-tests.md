@@ -887,6 +887,58 @@ pipeline — a check nobody ever expects to pass is worse than no check.
 
 ---
 
+### Diagnosis-phase persistent logging: journald Storage=persistent, per-boot state snapshot
+
+**Status:** `UNCONFIRMED`
+**Touches:** `appliance/setup_rpi.sh` (journald `Storage=`/`SystemMaxUse=`),
+`appliance/stage-custom/opt/wifucked/diag_snapshot.sh` (new),
+`appliance/stage-custom/etc/systemd/system/wifucked-diag-snapshot.service` (new)
+**Related:** [ADR-010](adr/ADR-010-state-storage.md), [SOP-009](sop/SOP-009-hardware-and-field-debugging.md),
+the "AP bring-up" entry above, #15
+
+**What actually runs today:** In direct response to a real device reporting
+"associates, never gets an address, even with a manually-set static IP" and
+the field debugging session finding that `hostapd`/`dnsmasq`/`NetworkManager`/
+`systemd-networkd` only ever logged to journald — which is `Storage=volatile`
+by design (ADR-010, to protect the SD card) and is wiped on every power
+cycle — this changes journald to `Storage=persistent`, bounded to
+`SystemMaxUse=64M`, and adds a new `wifucked-diag-snapshot.service` that runs
+once per boot after the AP/DHCP stack should be up, appending `rfkill list`,
+`nmcli device status`, `ip addr`/`ip route`, unit status for all four
+services, `hostapd_cli status`/`list_sta`, and that boot's `hostapd`/`dnsmasq`
+journal to the already-persistent `/var/log/wifucked-boot.log`.
+
+**What is unconfirmed:** Whether `SystemMaxUse=64M` is actually honored by the
+journald build on this image (bounded persistent journald has not been
+observed running on this hardware), whether the new unit's `After=` ordering
+actually gets it to run late enough that hostapd/dnsmasq have reached their
+final state rather than a transient one, and whether 64M is enough headroom
+given `wifucked-console.service`'s own already-documented SD-wear cost
+(the "USB OTG..." entry above) stacking with this.
+
+**Built-in fallback if it fails:** None new — if the snapshot unit fails to
+run or journald persistence silently doesn't take, the situation is exactly
+what it was before this change (volatile-only logs), not worse.
+
+**Next step:** Boot a device, reproduce the "no IP" symptom, power-cycle, and
+confirm `journalctl -u hostapd -u dnsmasq -b` and
+`/var/log/wifucked-boot.log`'s snapshot both still show the failure after the
+reboot rather than being empty.
+
+**Explicitly temporary:** revert `Storage=persistent` back to `volatile` and
+remove `wifucked-diag-snapshot.service` once the "AP bring-up" entry above is
+`CONFIRMED` — this trades away ADR-010's SD-wear protection on purpose, only
+for the duration of this investigation.
+
+**History:**
+- 2026-08-08 — added in direct response to a real device report that a
+  manually-configured static IP still could not reach the gateway, and that
+  the relevant service logs (hostapd/dnsmasq/NetworkManager/networkd) were
+  already lost to a reboot before they could be read. Not yet run on real
+  hardware.
+
+---
+
 ## Template for new entries
 
 ```markdown

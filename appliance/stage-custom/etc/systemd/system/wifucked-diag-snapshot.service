@@ -1,0 +1,19 @@
+# DIAGNOSIS-PHASE unit (2026-08-08). See diag_snapshot.sh and SOP-009.
+#
+# Runs once per boot, after the AP/DHCP/networking stack has had a chance to
+# come up, and appends a full state snapshot to the persistent boot log —
+# independent of wifucked.service (ADR-011: never gate diagnosis of the AP
+# path behind the daemon being alive).
+
+[Unit]
+Description=WI-FUCKED diagnosis-phase boot snapshot (temporary)
+After=hostapd.service dnsmasq.service systemd-networkd.service NetworkManager.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/wifucked/diag_snapshot.sh
+
+[Install]
+WantedBy=multi-user.target
