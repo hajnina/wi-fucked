@@ -1,3 +1,12 @@
+## v1.7.1 — 2026-08-08
+
+### docs
+- changelog for v1.7.0 [skip ci]
+
+### test
+- boot-smoke-test the actual released image under qemu (#59)
+
+
 ## v1.7.0 — 2026-08-08
 
 ### docs
