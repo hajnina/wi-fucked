@@ -108,7 +108,7 @@ def _serve_with_retry(app, host: str, port: int, *, sleep=time.sleep, deadline=N
                 extra={
                     "workflow": "api_start",
                     "state": "processing",
-                    "intent": "wait for systemd-networkd to land the gateway address before serving",
+                    "intent": "wait for systemd-networkd to land the gateway address first",
                     "host": host,
                     "port": port,
                     "attempt": attempt,
