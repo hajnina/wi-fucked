@@ -1,8 +1,11 @@
 #!/bin/bash
 #
-# DIAGNOSIS-PHASE tool (2026-08-08): one persistent, timestamped snapshot of
+# DIAGNOSIS-PHASE tool (2026-08-08): a persistent, timestamped snapshot of
 # every layer between "hostapd starts" and "a client has an address," taken
-# once per boot after those units have had a chance to settle.
+# every minute (wifucked-diag-snapshot.timer) rather than once at boot — the
+# state that matters (radio association, DHCP, whether the daemon is
+# crash-looping) can change at any point during a live test, not just at
+# startup, and a single boot-time sample cannot show that.
 #
 # Exists because journald was volatile (Storage=volatile) and the units that
 # matter most for the current "no IP handed out" investigation — hostapd,
@@ -13,14 +16,28 @@
 # not depend on journald's retention window and survives being read off the
 # SD card directly, same rationale as wifucked-boot.log itself (SOP-009).
 #
-# Remove once docs/active-tests.md's "AP bring-up" entry is CONFIRMED and this
-# stops being the active diagnostic path.
+# Bounded, same reasoning as the daemon's own RotatingFileHandler
+# (logging.py): a snapshot every minute forever is a real SD-wear cost, so
+# once the target file passes _MAX_BYTES this keeps only the tail before
+# appending, rather than growing without limit.
+#
+# Remove (this script and its .service/.timer) once docs/active-tests.md's
+# "AP bring-up" entry is CONFIRMED and this stops being the active diagnostic
+# path.
 #
 set -uo pipefail
 
-exec >> /var/log/wifucked-boot.log 2>&1
+_LOG=/var/log/wifucked-boot.log
+_MAX_BYTES=$((16 * 1024 * 1024))
+_KEEP_BYTES=$((8 * 1024 * 1024))
 
-echo "=== wifucked-diag-snapshot: $(date -u +%FT%TZ) ==="
+if [[ -f "${_LOG}" ]] && [[ "$(stat -c%s "${_LOG}" 2> /dev/null || echo 0)" -gt "${_MAX_BYTES}" ]]; then
+    tail -c "${_KEEP_BYTES}" "${_LOG}" > "${_LOG}.tmp" && mv "${_LOG}.tmp" "${_LOG}"
+fi
+
+exec >> "${_LOG}" 2>&1
+
+echo "=== wifucked-diag-snapshot: $(date -u +%FT%TZ) (uptime $(cut -d' ' -f1 /proc/uptime 2> /dev/null || echo '?')s) ==="
 
 section() {
     echo "--- $1"

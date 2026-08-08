@@ -71,11 +71,13 @@ rationale, not a permanent change of that decision.
 Regardless of journald's retention, it still says nothing about a boot early
 enough that the daemon or a console isn't up yet. `wifucked-firstboot` and
 `wifucked-bootcount` write their own output to a persistent file for that reason,
-and — also diagnosis-phase, also temporary — `wifucked-diag-snapshot.service`
+and — also diagnosis-phase, also temporary — `wifucked-diag-snapshot.timer`
 appends a full snapshot (`rfkill`, `nmcli`, `ip addr`, `ip route`, unit status,
 `hostapd_cli status`/`list_sta`, and the current boot's `hostapd`/`dnsmasq`
-journal) to the same file once per boot, after the AP/DHCP stack has had a
-chance to come up:
+journal) to the same file once ~15s after boot and then **every minute** for
+the life of the boot — continuous, not a single boot-time sample, because
+whatever fails may not fail near boot. The file self-truncates to its last
+8MB once it passes 16MB so this does not grow without bound:
 
 ```bash
 cat /var/log/wifucked-boot.log

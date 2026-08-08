@@ -1,0 +1,17 @@
+# DIAGNOSIS-PHASE timer (2026-08-08). Fires wifucked-diag-snapshot.service
+# once at boot (short delay, so the AP/DHCP stack has had a moment) and then
+# every minute for the life of the boot — a continuous state record, not a
+# single boot-time sample, so a snapshot exists close to whenever a live test
+# was actually run. See docs/active-tests.md and SOP-009.
+
+[Unit]
+Description=WI-FUCKED diagnosis-phase state snapshot timer
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=1min
+AccuracySec=1s
+Unit=wifucked-diag-snapshot.service
+
+[Install]
+WantedBy=timers.target

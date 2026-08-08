@@ -49,7 +49,7 @@ systemctl enable wifucked-firstboot.service
 systemctl enable wifucked-bootcount.service
 systemctl enable wifucked.service
 systemctl enable wifucked-watchdog.timer
-systemctl enable wifucked-diag-snapshot.service
+systemctl enable wifucked-diag-snapshot.timer
 
 # TEMPORARY, DESTRUCTIVE, bring-up only — see wifucked-console.service and
 # hdmi_console.sh. This exists because the first real-hardware boots have
