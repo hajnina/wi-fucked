@@ -376,20 +376,22 @@ jobs:
           CONSOLE="${WORK}/console.log"
           touch "${CONSOLE}"
           set +e
-          # Matches the confirmed-working community invocation for this
-          # machine model closely, not just what seemed plausible: the
-          # console needs an explicit baud rate (`,115200`) to actually
-          # attach, and `-cpu cortex-a53` (the Zero 2W's real CPU, same
-          # family raspi3b emulates) rather than leaving qemu to pick a
-          # default. A first attempt without these produced a clean exit
-          # (code 0) with zero console output at all — not a kernel panic,
-          # the console genuinely never attached.
+          # Two real CI attempts with `-display none -serial file:X` (plus
+          # an explicit baud rate and CPU model) both produced a clean qemu
+          # exit (code 0) with zero console output — not a kernel panic,
+          # the console never attached at all. Every confirmed-working
+          # community invocation for this exact machine model uses
+          # `-nographic` instead of a separate `-display`/`-serial` pair;
+          # for `raspi3b` specifically these are not equivalent — capture
+          # the whole thing by redirecting `-nographic`'s stdout, matching
+          # what's actually been shown to work here rather than what
+          # seemed like it should be equivalent.
           timeout 300 qemu-system-aarch64 \
             -M raspi3b -cpu cortex-a53 -m 1024 -smp 4 \
             -kernel "${WORK}/kernel8.img" -dtb "${WORK}/board.dtb" \
             -append "console=ttyAMA0,115200 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait rw" \
-            -sd "${BOOT_IMG}" \
-            -serial file:"${CONSOLE}" -display none -no-reboot
+            -drive file="${BOOT_IMG}",format=raw,if=sd \
+            -nographic -no-reboot > "${CONSOLE}" 2>&1
           QEMU_RC=$?
           set -e
 
