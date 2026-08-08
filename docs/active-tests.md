@@ -818,6 +818,75 @@ objects that are supposed to produce it.
 
 ---
 
+### Boot-smoke-test of the actual released image under QEMU — attempted, not yet working
+
+**Status:** `BROKEN` (non-blocking, `continue-on-error: true` — does not gate real releases)
+**Touches:** `.github/workflows/reusable_image_pipeline.yml` (`bake` job,
+"Boot-smoke-test the actual released image" step)
+**Related:** #59
+
+**What this is for:** every existing gate in the bake pipeline (capability
+gate, anchor gate) proves the image *contains* the right binaries and
+static config — none of them prove it actually *boots*. This step extracts
+the real `kernel8.img` and devicetree from the literal artifact bytes about
+to be published and attempts to boot them under
+`qemu-system-aarch64 -M raspi3b`, watching for `wifucked.service` to reach
+its own started state on the serial console.
+
+**What actually happens:** it does not reach that state, in any attempt so
+far. `-d guest_errors,unimp` shows the kernel is genuinely loaded and
+executing — real BCM2835 mailbox/property probes, real hardware register
+writes — but the guest never produces a single line of its own console
+output, and every run ends the same way: a write to the BCM2835 watchdog
+register (its standard reset mechanism) roughly 15-35 seconds in, then a
+clean QEMU exit. This was unaffected by: an explicit console baud rate,
+`-nographic` instead of `-serial file:`/`-display none`, registering both
+possible console UART targets (`ttyS0` and `ttyAMA0` — the Zero 2W's
+onboard Bluetooth normally claims the good PL011 UART, resolved on real
+hardware by a firmware-applied `config.txt` overlay that direct
+`-kernel`/`-dtb` boot bypasses entirely), an explicit CPU model, or
+`panic=0`/`earlycon` (which should surface a real panic message if one is
+happening and stop an early panic from auto-rebooting before it can be
+captured — neither changed the outcome at all).
+
+**Leading hypothesis, not confirmed:** the console-routing fixes all being
+no-ops, combined with `SD: Unknown CMD52 for spec v2.00` /
+`SD: Unknown CMD5 for spec v2.00` warnings appearing in the same trace,
+points at QEMU's raspi3b SD controller emulation not correctly handling
+this specific kernel's MMC negotiation sequence — early enough that the
+kernel never gets anywhere near initializing its own console driver, let
+alone mounting root or starting systemd. This is a hypothesis built from
+the available evidence, not something independently confirmed the way
+every other claim in this file is expected to be (e.g. by patching the
+kernel command line to prove root-mount failure specifically, or trying an
+older Raspberry Pi OS release known to work with this QEMU version) —
+flagged honestly as unconfirmed rather than asserted as the fix.
+
+**Built-in fallback if it never gets fixed:** none needed — this step is
+`continue-on-error: true` specifically because it adds no risk to real
+releases either way. The actual, load-bearing behavioral proof
+(`appliance/tests/e2e/`'s generic-hardware QEMU test — real `setup_rpi.sh`,
+real systemd units, real `hostapd`, real 802.11 association, real WAN
+chaos, a real download surviving it) already exists, is extensively
+validated, and does not depend on this step succeeding.
+
+**Next step:** either get real console output out of this exact
+kernel/QEMU/devicetree combination (try `-M raspi3ap` if available in a
+newer QEMU, an older Raspberry Pi OS point release known to work with
+`raspi3b`, or a locally-built minimal test kernel to isolate whether this
+is an SD-emulation problem specifically or something else), or conclude
+it's not achievable with the current toolchain and remove the step rather
+than leave a permanently-red, permanently-ignored diagnostic in the
+pipeline — a check nobody ever expects to pass is worse than no check.
+
+**History:**
+- 2026-08-08 — added, eight real CI iterations characterizing exactly
+  where and how it fails (see above), root cause not yet found. Kept
+  non-blocking and honestly documented rather than either blocking real
+  releases on it or quietly deleting the attempt.
+
+---
+
 ## Template for new entries
 
 ```markdown
