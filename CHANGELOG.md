@@ -1,3 +1,13 @@
+## v1.6.3 — 2026-08-08
+
+### feat
+- real fabric + WireGuard tunnel + LAN download surviving WAN chaos (#48)
+
+### docs
+- record item 16's true final root cause (forwarding never enabled) (#58)
+- changelog for v1.6.2 [skip ci]
+
+
 ## v1.6.2 — 2026-08-07
 
 ### feat
