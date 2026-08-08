@@ -376,20 +376,24 @@ jobs:
           CONSOLE="${WORK}/console.log"
           touch "${CONSOLE}"
           set +e
-          # Two real CI attempts with `-display none -serial file:X` (plus
-          # an explicit baud rate and CPU model) both produced a clean qemu
-          # exit (code 0) with zero console output — not a kernel panic,
-          # the console never attached at all. Every confirmed-working
-          # community invocation for this exact machine model uses
-          # `-nographic` instead of a separate `-display`/`-serial` pair;
-          # for `raspi3b` specifically these are not equivalent — capture
-          # the whole thing by redirecting `-nographic`'s stdout, matching
-          # what's actually been shown to work here rather than what
-          # seemed like it should be equivalent.
+          # Three real CI attempts (varying -serial/-display vs -nographic,
+          # explicit baud rate, explicit CPU model) all produced a clean
+          # qemu exit (code 0) at ~30-35s with zero console output — not a
+          # kernel panic, nothing ever printed at all. The likely cause:
+          # models with onboard Bluetooth (the Zero 2W has it) default the
+          # good PL011 UART to Bluetooth and route console to the
+          # mini-UART (`ttyS0`) instead — on real hardware this is resolved
+          # by a firmware-applied dtoverlay from `config.txt` (`serial0`
+          # symlink pointing at whichever UART actually owns console), but
+          # `-kernel`/`-dtb` boot bypasses the firmware/config.txt stage
+          # entirely, so that resolution never happens here. Register both
+          # possible targets rather than guess which one this specific
+          # devicetree wires up.
           timeout 300 qemu-system-aarch64 \
             -M raspi3b -cpu cortex-a53 -m 1024 -smp 4 \
+            -d guest_errors,unimp \
             -kernel "${WORK}/kernel8.img" -dtb "${WORK}/board.dtb" \
-            -append "console=ttyAMA0,115200 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait rw" \
+            -append "console=ttyS0,115200 console=ttyAMA0,115200 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait rw" \
             -drive file="${BOOT_IMG}",format=raw,if=sd \
             -nographic -no-reboot > "${CONSOLE}" 2>&1
           QEMU_RC=$?
