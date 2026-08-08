@@ -393,7 +393,7 @@ jobs:
             -M raspi3b -cpu cortex-a53 -m 1024 -smp 4 \
             -d guest_errors,unimp \
             -kernel "${WORK}/kernel8.img" -dtb "${WORK}/board.dtb" \
-            -append "console=ttyS0,115200 console=ttyAMA0,115200 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait rw" \
+            -append "console=ttyS0,115200 console=ttyAMA0,115200 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait rw panic=0 earlycon" \
             -drive file="${BOOT_IMG}",format=raw,if=sd \
             -nographic -no-reboot > "${CONSOLE}" 2>&1
           QEMU_RC=$?
