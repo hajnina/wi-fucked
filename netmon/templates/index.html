@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>netmon</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #131316;
+    --surface: #1c1c22;
+    --surface-hi: #232329;
+    --outline: #333340;
+    --text: #eceaf0;
+    --text-dim: #9b98a8;
+    --accent: #a9c7ff;
+    --accent-strong: #4d7fff;
+    --good: #6fdc9a;
+    --bad: #ff6f7d;
+    --warn: #ffcf6f;
+    --radius: 20px;
+    --radius-sm: 12px;
+    --ease: cubic-bezier(.2,.8,.2,1);
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", Roboto, system-ui, sans-serif;
+    background: radial-gradient(1200px 600px at 10% -10%, #202030 0%, var(--bg) 55%);
+    color: var(--text);
+    margin: 0;
+    padding: 28px clamp(16px, 4vw, 48px) 64px;
+    min-height: 100vh;
+  }
+  h1 { font-size: 1.4rem; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .muted { color: var(--text-dim); font-size: 0.8rem; }
+  a { color: var(--accent); }
+
+  .topbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:22px; }
+  .chip {
+    display:inline-flex; align-items:center; gap:8px;
+    background: var(--surface-hi); border:1px solid var(--outline);
+    border-radius: 999px; padding:8px 16px; font-size:0.85rem;
+    transition: background .25s var(--ease), box-shadow .25s var(--ease);
+  }
+  .chip:hover { box-shadow: 0 4px 18px rgba(0,0,0,.35); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--good); flex-shrink:0; }
+  .dot.pulse { animation: pulse 1.4s ease-in-out infinite; background: var(--bad); }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255,111,125,.55); }
+    50% { box-shadow: 0 0 0 6px rgba(255,111,125,0); }
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--outline);
+    border-radius: var(--radius);
+    padding: 20px 22px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.02) inset, 0 10px 30px rgba(0,0,0,.25);
+    animation: rise .35s var(--ease);
+  }
+  @keyframes rise { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform:none; } }
+
+  #addForm { display:flex; gap:14px; flex-wrap:wrap; align-items:end; }
+  #addForm label { display:flex; flex-direction:column; font-size:0.72rem; color:var(--text-dim); gap:5px; text-transform:uppercase; letter-spacing:.4px; }
+  #addForm input[type=text], #addForm input[type=number] { width:130px; }
+  .field-check { flex-direction:row !important; align-items:center; gap:8px !important; }
+
+  input[type=text], input[type=number], input[type=datetime-local], select {
+    background: var(--surface-hi); border:1px solid var(--outline); color:var(--text);
+    padding:8px 10px; border-radius: var(--radius-sm); font-size:0.85rem;
+    transition: border-color .2s var(--ease), box-shadow .2s var(--ease);
+  }
+  input:focus, select:focus { outline:none; border-color: var(--accent-strong); box-shadow: 0 0 0 3px rgba(77,127,255,.2); }
+  input[type=checkbox] { transform: scale(1.25); accent-color: var(--accent-strong); }
+
+  button {
+    background: var(--accent-strong); color:#0c1220; border:none; font-weight:600;
+    border-radius: var(--radius-sm); padding:9px 18px; cursor:pointer; font-size:0.85rem;
+    transition: transform .12s var(--ease), box-shadow .2s var(--ease), filter .2s var(--ease);
+    box-shadow: 0 4px 14px rgba(77,127,255,.3);
+  }
+  button:hover { filter: brightness(1.08); box-shadow: 0 6px 20px rgba(77,127,255,.4); }
+  button:active { transform: scale(.96); }
+  button.ghost { background: transparent; color:var(--text); border:1px solid var(--outline); box-shadow:none; }
+  button.ghost:hover { background: var(--surface-hi); }
+  button.ghost.active { background: var(--accent-strong); color:#0c1220; border-color:transparent; }
+  button.danger { background: #3a1c22; color:#ffb4bb; box-shadow:none; border:1px solid #5a2530; }
+  button.danger:hover { background:#4a232b; }
+  button.icon { padding:7px 12px; }
+
+  table { width:100%; border-collapse: collapse; }
+  th, td { padding:10px 10px; text-align:left; font-size:0.82rem; vertical-align:middle; }
+  th { color:var(--text-dim); font-weight:600; font-size:0.72rem; text-transform:uppercase; letter-spacing:.5px; border-bottom:1px solid var(--outline); }
+  tbody tr { border-bottom:1px solid var(--outline); transition: background .2s var(--ease); animation: rise .3s var(--ease); }
+  tbody tr:hover { background: rgba(255,255,255,.02); }
+  tbody tr:last-child { border-bottom:none; }
+
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; font-size:0.75rem; font-weight:600; }
+  .pill-up { background: rgba(111,220,154,.14); color: var(--good); }
+  .pill-down { background: rgba(255,111,125,.14); color: var(--bad); }
+  .pill-unknown { background: rgba(155,152,168,.14); color: var(--text-dim); }
+  .pill .dot { margin:0; }
+
+  input[data-field].small { width:64px; }
+  canvas.spark { background: var(--surface-hi); border-radius: 10px; display:block; }
+
+  /* modal */
+  .modal-backdrop {
+    position:fixed; inset:0; background: rgba(6,6,10,.6); backdrop-filter: blur(3px);
+    display:flex; align-items:flex-start; justify-content:center; padding: 5vh 16px;
+    opacity:0; pointer-events:none; transition: opacity .22s var(--ease); z-index:50;
+  }
+  .modal-backdrop.open { opacity:1; pointer-events:auto; }
+  .modal {
+    background: var(--surface); border:1px solid var(--outline); border-radius: var(--radius);
+    width:min(920px, 100%); max-height:90vh; overflow-y:auto; padding:24px 26px 28px;
+    box-shadow: 0 30px 80px rgba(0,0,0,.5);
+    transform: translateY(14px) scale(.98); opacity:0; transition: all .25s var(--ease);
+  }
+  .modal-backdrop.open .modal { transform:none; opacity:1; }
+  .modal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+  .modal-head h2 { font-size:1.1rem; margin:0; }
+
+  .range-row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:16px 0; }
+  .range-row .presets { display:flex; gap:6px; flex-wrap:wrap; }
+
+  .stat-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap:10px; margin: 14px 0 18px; }
+  .stat { background: var(--surface-hi); border-radius: var(--radius-sm); padding:12px 14px; }
+  .stat .v { font-size:1.25rem; font-weight:700; }
+  .stat .l { font-size:0.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.4px; }
+
+  .chart-block { margin-bottom:18px; }
+  .chart-block h3 { font-size:0.78rem; text-transform:uppercase; letter-spacing:.5px; color:var(--text-dim); margin:0 0 8px; }
+  canvas.chart { width:100%; height:130px; background:var(--surface-hi); border-radius: var(--radius-sm); }
+
+  #eventsTable td, #eventsTable th { font-size:0.78rem; }
+  .badge-ongoing { color: var(--warn); font-weight:600; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <h1>netmon</h1>
+    <div class="muted">subjective network monitor — reachability &amp; latency across your endpoints</div>
+  </div>
+  <div class="chip" id="publicIpChip" role="button" tabindex="0" style="cursor:pointer;">
+    <span class="dot" id="publicIpDot"></span>
+    Public IP: <strong id="publicIp">-</strong>
+    <span class="muted" id="publicIpChanged"></span>
+  </div>
+</div>
+
+<div class="card">
+  <form id="addForm">
+    <label>Name <input type="text" name="name" placeholder="VPN-B exit" required></label>
+    <label>Host/IP <input type="text" name="host" placeholder="10.0.0.1" required></label>
+    <label>VPN tag <input type="text" name="vpn" placeholder="vpn-b"></label>
+    <label>Interval (s) <input type="number" name="interval_s" value="0.1" min="0.1" step="0.1"></label>
+    <label>Timeout (s) <input type="number" name="timeout_s" value="2" min="1" step="1"></label>
+    <label class="field-check">Beep on drop <input type="checkbox" name="beep_on_drop" checked></label>
+    <button type="submit">Add host</button>
+  </form>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th><th>Host</th><th>VPN</th><th>Status</th><th>Latency</th>
+        <th>Uptime</th><th>Interval</th><th>Timeout</th><th>Beep</th><th>Trend</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="modalTitle">Diagnostics</h2>
+      <button class="ghost icon" id="modalClose">close</button>
+    </div>
+    <div class="muted" id="modalHost"></div>
+
+    <div class="range-row">
+      <div class="presets" id="presets"></div>
+      <input type="datetime-local" id="rangeFrom">
+      <span class="muted">to</span>
+      <input type="datetime-local" id="rangeTo">
+      <select id="bucketSize">
+        <option value="60">1 min buckets</option>
+        <option value="300">5 min buckets</option>
+        <option value="900">15 min buckets</option>
+        <option value="3600">1 hour buckets</option>
+        <option value="86400">1 day buckets</option>
+      </select>
+      <button id="loadRange">Load</button>
+    </div>
+
+    <div class="stat-grid" id="statGrid"></div>
+
+    <div class="chart-block">
+      <h3>Drop events per bucket</h3>
+      <canvas class="chart" id="dropChart" width="860" height="130"></canvas>
+    </div>
+    <div class="chart-block">
+      <h3>Average latency per bucket</h3>
+      <canvas class="chart" id="latencyChart" width="860" height="130"></canvas>
+    </div>
+
+    <h3 class="muted" style="text-transform:uppercase; letter-spacing:.5px; font-size:.78rem;">Outage events in range</h3>
+    <table id="eventsTable">
+      <thead><tr><th>Started</th><th>Ended</th><th>Duration</th></tr></thead>
+      <tbody id="eventsRows"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="ipModalBackdrop">
+  <div class="modal" style="width:min(560px,100%);">
+    <div class="modal-head">
+      <h2>Public IP history</h2>
+      <button class="ghost icon" id="ipModalClose">close</button>
+    </div>
+    <div class="muted">Every distinct public IP seen, and how long it held.</div>
+    <table style="margin-top:14px;">
+      <thead><tr><th>IP</th><th>Held for</th><th>Since</th><th>Until</th></tr></thead>
+      <tbody id="ipHistoryRows"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const prevStatus = {};
+const hostsById = {};
+let audioCtx = null;
+let activeHostId = null;
+let activePresetSeconds = 3600;
+
+function beep() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    gain.gain.value = 0.15;
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start();
+    setTimeout(() => osc.stop(), 220);
+  } catch (e) { /* audio unavailable until the page has been interacted with */ }
+}
+
+function fmtDuration(s) {
+  s = Math.round(s);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s/60)}m ${s%60}s`;
+  return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`;
+}
+
+function drawSpark(canvas, history) {
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (!history.length) return;
+  const latencies = history.map(p => p.latency_ms).filter(v => v !== null);
+  const max = Math.max(1, ...latencies);
+  const n = history.length;
+  const step = w / Math.max(1, n - 1);
+  ctx.lineWidth = 1.5;
+  history.forEach((p, i) => {
+    const x = i * step;
+    if (p.latency_ms === null) {
+      ctx.strokeStyle = "#ff6f7d";
+      ctx.beginPath();
+      ctx.moveTo(x, h - 2);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    } else {
+      const y = h - (p.latency_ms / max) * (h - 4) - 2;
+      if (i === 0) { ctx.strokeStyle = "#6fdc9a"; ctx.beginPath(); ctx.moveTo(x, y); }
+      else ctx.lineTo(x, y);
+    }
+  });
+  ctx.stroke();
+}
+
+function drawBarChart(canvas, buckets, valueFn, color) {
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (!buckets.length) {
+    ctx.fillStyle = "#9b98a8"; ctx.font = "12px sans-serif";
+    ctx.fillText("no data in range", 10, h / 2);
+    return;
+  }
+  const values = buckets.map(valueFn);
+  const max = Math.max(1, ...values);
+  const gap = 2;
+  const barW = Math.max(1, w / buckets.length - gap);
+  buckets.forEach((b, i) => {
+    const v = valueFn(b);
+    const barH = (v / max) * (h - 8);
+    const x = i * (barW + gap);
+    ctx.fillStyle = v > 0 ? color : "#2a2a33";
+    ctx.fillRect(x, h - barH, barW, Math.max(barH, v > 0 ? 2 : 1));
+  });
+}
+
+function drawLineChart(canvas, buckets, valueFn, color) {
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const points = buckets.map((b, i) => ({ x: i, y: valueFn(b) })).filter(p => p.y !== null);
+  if (!points.length) {
+    ctx.fillStyle = "#9b98a8"; ctx.font = "12px sans-serif";
+    ctx.fillText("no data in range", 10, h / 2);
+    return;
+  }
+  const max = Math.max(1, ...points.map(p => p.y));
+  const step = w / Math.max(1, buckets.length - 1);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const x = p.x * step;
+    const y = h - (p.y / max) * (h - 10) - 4;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+const rowEls = {};
+
+function bindRowHandlers(tr) {
+  tr.querySelectorAll("input[data-field]").forEach(el => {
+    el.addEventListener("change", async () => {
+      const id = el.dataset.id;
+      const field = el.dataset.field;
+      const value = el.type === "checkbox" ? el.checked : Number(el.value);
+      await fetch(`/api/hosts/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: value }),
+      });
+    });
+  });
+  tr.querySelector("button[data-del]").addEventListener("click", async (e) => {
+    const id = e.target.dataset.del;
+    delete rowEls[id];
+    await fetch(`/api/hosts/${id}`, { method: "DELETE" });
+    refresh();
+  });
+  tr.querySelector("button[data-diag]").addEventListener("click", (e) => {
+    openDiagnostics(e.target.dataset.diag);
+  });
+}
+
+function buildRow(h) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td data-c="name"></td>
+    <td data-c="host"></td>
+    <td data-c="vpn"></td>
+    <td data-c="status"></td>
+    <td data-c="latency"></td>
+    <td data-c="uptime"></td>
+    <td><input class="small" type="number" min="0.1" step="0.1" data-field="interval_s" data-id="${h.id}"></td>
+    <td><input class="small" type="number" min="1" data-field="timeout_s" data-id="${h.id}"></td>
+    <td><input type="checkbox" data-field="beep_on_drop" data-id="${h.id}"></td>
+    <td><canvas class="spark" width="140" height="30"></canvas></td>
+    <td style="display:flex; gap:6px;">
+      <button class="ghost icon" data-diag="${h.id}">diagnostics</button>
+      <button class="danger icon" data-del="${h.id}">remove</button>
+    </td>
+  `;
+  bindRowHandlers(tr);
+  return tr;
+}
+
+function updateRow(tr, h) {
+  tr.querySelector('[data-c="name"]').textContent = h.name;
+  tr.querySelector('[data-c="host"]').textContent = h.host;
+  tr.querySelector('[data-c="vpn"]').textContent = h.vpn || "";
+  tr.querySelector('[data-c="status"]').innerHTML =
+    `<span class="pill pill-${h.status}"><span class="dot ${h.status === 'down' ? 'pulse' : ''}"></span>${h.status}</span>`;
+  tr.querySelector('[data-c="latency"]').textContent = h.avg_latency_ms != null ? h.avg_latency_ms + " ms" : "-";
+  tr.querySelector('[data-c="uptime"]').textContent = h.uptime_pct != null ? h.uptime_pct + "%" : "-";
+
+  // Don't stomp on a field the user is actively editing.
+  const active = document.activeElement;
+  for (const field of ["interval_s", "timeout_s", "beep_on_drop"]) {
+    const el = tr.querySelector(`[data-field="${field}"]`);
+    if (el === active) continue;
+    if (field === "beep_on_drop") el.checked = h.beep_on_drop;
+    else el.value = h[field];
+  }
+
+  drawSpark(tr.querySelector("canvas"), h.history);
+}
+
+async function refresh() {
+  const res = await fetch("/api/hosts");
+  const hosts = await res.json();
+  const tbody = document.getElementById("rows");
+  const seen = new Set();
+
+  for (const h of hosts) {
+    hostsById[h.id] = h;
+    seen.add(h.id);
+    if (prevStatus[h.id] === "up" && h.status === "down" && h.beep_on_drop) beep();
+    prevStatus[h.id] = h.status;
+
+    let tr = rowEls[h.id];
+    if (!tr) {
+      tr = buildRow(h);
+      rowEls[h.id] = tr;
+      tbody.appendChild(tr);
+    }
+    updateRow(tr, h);
+  }
+
+  for (const id of Object.keys(rowEls)) {
+    if (!seen.has(id)) {
+      rowEls[id].remove();
+      delete rowEls[id];
+    }
+  }
+}
+
+document.getElementById("addForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const body = {
+    name: form.name.value,
+    host: form.host.value,
+    vpn: form.vpn.value,
+    interval_s: Number(form.interval_s.value),
+    timeout_s: Number(form.timeout_s.value),
+    beep_on_drop: form.beep_on_drop.checked,
+  };
+  await fetch("/api/hosts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  form.reset();
+  form.interval_s.value = 5;
+  form.timeout_s.value = 2;
+  form.beep_on_drop.checked = true;
+  refresh();
+});
+
+async function refreshPublicIp() {
+  const res = await fetch("/api/publicip");
+  const data = await res.json();
+  document.getElementById("publicIp").textContent = data.current_ip || "unknown";
+  const dot = document.getElementById("publicIpDot");
+  const changedEl = document.getElementById("publicIpChanged");
+  if (data.last_change_ts) {
+    const ago = Math.round((Date.now() / 1000 - data.last_change_ts) / 60);
+    changedEl.textContent = `(changed ${ago}m ago)`;
+    dot.classList.toggle("pulse", ago < 2);
+  } else {
+    changedEl.textContent = "";
+  }
+}
+
+// --- diagnostics modal ---
+
+const PRESETS = [
+  { label: "15m", seconds: 15 * 60, bucket: 60 },
+  { label: "1h", seconds: 60 * 60, bucket: 60 },
+  { label: "6h", seconds: 6 * 3600, bucket: 300 },
+  { label: "24h", seconds: 24 * 3600, bucket: 900 },
+  { label: "7d", seconds: 7 * 24 * 3600, bucket: 3600 },
+];
+
+function initPresets() {
+  const wrap = document.getElementById("presets");
+  wrap.innerHTML = "";
+  PRESETS.forEach(p => {
+    const btn = document.createElement("button");
+    btn.className = "ghost";
+    btn.textContent = p.label;
+    btn.dataset.seconds = p.seconds;
+    btn.addEventListener("click", () => applyPreset(p));
+    wrap.appendChild(btn);
+  });
+}
+
+function toLocalInputValue(ts) {
+  const d = new Date(ts * 1000);
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+}
+
+function applyPreset(p) {
+  activePresetSeconds = p.seconds;
+  const now = Date.now() / 1000;
+  document.getElementById("rangeFrom").value = toLocalInputValue(now - p.seconds);
+  document.getElementById("rangeTo").value = toLocalInputValue(now);
+  document.getElementById("bucketSize").value = p.bucket;
+  document.querySelectorAll("#presets button").forEach(b => {
+    b.classList.toggle("active", Number(b.dataset.seconds) === p.seconds);
+  });
+  loadDiagnostics();
+}
+
+function currentRange() {
+  const from = new Date(document.getElementById("rangeFrom").value).getTime() / 1000;
+  const to = new Date(document.getElementById("rangeTo").value).getTime() / 1000;
+  const bucket_s = Number(document.getElementById("bucketSize").value);
+  return { from, to, bucket_s };
+}
+
+async function openDiagnostics(hostId) {
+  activeHostId = hostId;
+  const h = hostsById[hostId];
+  document.getElementById("modalTitle").textContent = `Diagnostics — ${h ? h.name : hostId}`;
+  document.getElementById("modalHost").textContent = h ? `${h.host}${h.vpn ? " · " + h.vpn : ""}` : "";
+  document.getElementById("modalBackdrop").classList.add("open");
+  applyPreset(PRESETS[1]); // default: 1h
+}
+
+function closeDiagnostics() {
+  document.getElementById("modalBackdrop").classList.remove("open");
+  activeHostId = null;
+}
+
+document.getElementById("modalClose").addEventListener("click", closeDiagnostics);
+document.getElementById("modalBackdrop").addEventListener("click", (e) => {
+  if (e.target.id === "modalBackdrop") closeDiagnostics();
+});
+document.getElementById("loadRange").addEventListener("click", () => {
+  document.querySelectorAll("#presets button").forEach(b => b.classList.remove("active"));
+  loadDiagnostics();
+});
+
+async function loadDiagnostics() {
+  if (!activeHostId) return;
+  const { from, to, bucket_s } = currentRange();
+  const qs = `from=${from}&to=${to}&bucket_s=${bucket_s}`;
+
+  const [buckets, events, summary] = await Promise.all([
+    fetch(`/api/hosts/${activeHostId}/buckets?${qs}`).then(r => r.json()),
+    fetch(`/api/hosts/${activeHostId}/events?${qs}`).then(r => r.json()),
+    fetch(`/api/hosts/${activeHostId}/summary?${qs}`).then(r => r.json()),
+  ]);
+
+  const longest = events.reduce((m, e) => Math.max(m, e.duration_s), 0);
+
+  const statGrid = document.getElementById("statGrid");
+  statGrid.innerHTML = `
+    <div class="stat"><div class="v">${summary.total ?? 0}</div><div class="l">Samples</div></div>
+    <div class="stat"><div class="v">${summary.uptime_pct != null ? summary.uptime_pct + "%" : "-"}</div><div class="l">Uptime</div></div>
+    <div class="stat"><div class="v">${summary.fail ?? 0}</div><div class="l">Failed pings</div></div>
+    <div class="stat"><div class="v">${events.length}</div><div class="l">Outage events</div></div>
+    <div class="stat"><div class="v">${summary.avg_latency_ms != null ? summary.avg_latency_ms + " ms" : "-"}</div><div class="l">Avg latency</div></div>
+    <div class="stat"><div class="v">${longest ? fmtDuration(longest) : "-"}</div><div class="l">Longest outage</div></div>
+  `;
+
+  drawBarChart(document.getElementById("dropChart"), buckets, b => b.fail, "#ff6f7d");
+  drawLineChart(document.getElementById("latencyChart"), buckets, b => b.avg_latency_ms, "#a9c7ff");
+
+  const rows = document.getElementById("eventsRows");
+  rows.innerHTML = "";
+  if (!events.length) {
+    rows.innerHTML = `<tr><td colspan="3" class="muted">No outages in this range.</td></tr>`;
+  }
+  for (const ev of events) {
+    const tr = document.createElement("tr");
+    const started = new Date(ev.started_ts * 1000).toLocaleString();
+    const ended = ev.ongoing ? '<span class="badge-ongoing">ongoing</span>' : new Date(ev.ended_ts * 1000).toLocaleString();
+    tr.innerHTML = `<td>${started}</td><td>${ended}</td><td>${fmtDuration(ev.duration_s)}</td>`;
+    rows.appendChild(tr);
+  }
+}
+
+async function openIpHistory() {
+  document.getElementById("ipModalBackdrop").classList.add("open");
+  const periods = await fetch("/api/publicip/history").then(r => r.json());
+  const rows = document.getElementById("ipHistoryRows");
+  rows.innerHTML = "";
+  if (!periods.length) {
+    rows.innerHTML = `<tr><td colspan="4" class="muted">No public IP samples yet.</td></tr>`;
+    return;
+  }
+  for (const p of periods) {
+    const tr = document.createElement("tr");
+    const since = new Date(p.started_ts * 1000).toLocaleString();
+    const until = p.ongoing ? '<span class="badge-ongoing">current</span>' : new Date(p.ended_ts * 1000).toLocaleString();
+    tr.innerHTML = `<td>${p.ip}</td><td>${fmtDuration(p.duration_s)}</td><td>${since}</td><td>${until}</td>`;
+    rows.appendChild(tr);
+  }
+}
+
+function closeIpHistory() {
+  document.getElementById("ipModalBackdrop").classList.remove("open");
+}
+
+document.getElementById("publicIpChip").addEventListener("click", openIpHistory);
+document.getElementById("publicIpChip").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openIpHistory(); }
+});
+document.getElementById("ipModalClose").addEventListener("click", closeIpHistory);
+document.getElementById("ipModalBackdrop").addEventListener("click", (e) => {
+  if (e.target.id === "ipModalBackdrop") closeIpHistory();
+});
+
+initPresets();
+refresh();
+refreshPublicIp();
+setInterval(refresh, 2000);
+setInterval(refreshPublicIp, 15000);
+setInterval(() => { if (activeHostId) loadDiagnostics(); }, 30000);
+</script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+[
+  {
+    "id": "cf-dns",
+    "name": "Cloudflare DNS",
+    "host": "1.1.1.1",
+    "vpn": "direct",
+    "interval_s": 0.1,
+    "timeout_s": 2,
+    "beep_on_drop": true
+  },
+  {
+    "id": "google-dns",
+    "name": "Google DNS",
+    "host": "8.8.8.8",
+    "vpn": "direct",
+    "interval_s": 0.1,
+    "timeout_s": 2,
+    "beep_on_drop": false
+  },
+  {
+    "id": "quad9",
+    "name": "Quad9 DNS",
+    "host": "9.9.9.9",
+    "vpn": "vpn-a",
+    "interval_s": 0.1,
+    "timeout_s": 2,
+    "beep_on_drop": true
+  }
+]
